@@ -15,6 +15,19 @@ import {
   type RamenShop,
   type RamenType,
 } from "./ramen-data";
+import {
+  analyzeRecommendationIntent,
+  distanceBetweenKm,
+  formatDistance,
+  recommendShops,
+  type Coordinates,
+  type RecommendationResult,
+} from "./recommendation";
+import {
+  LocationRequestError,
+  requestCurrentCoordinates,
+  type LocationFailureCode,
+} from "./geolocation";
 
 type KakaoNamespace = {
   maps: Record<string, unknown> & {
@@ -30,11 +43,17 @@ declare global {
 }
 
 type MapStatus = "loading" | "ready" | "missing" | "error";
+type LocationStatus = "idle" | "requesting" | "ready" | LocationFailureCode;
+type ChatRecommendation = {
+  shopId: string;
+  reason: string;
+  distanceKm: number | null;
+};
 type ChatMessage = {
   id: number;
   role: "bot" | "user";
   text: string;
-  shopIds?: string[];
+  recommendations?: ChatRecommendation[];
 };
 
 const KAKAO_APP_KEY = process.env.NEXT_PUBLIC_KAKAO_MAP_KEY ?? "";
@@ -43,16 +62,18 @@ const INITIAL_CHAT: ChatMessage[] = [
   {
     id: 1,
     role: "bot",
-    text: "반가워요! 오늘 당기는 맛을 알려주면 전국 라멘 중 딱 맞는 세 그릇을 골라드릴게요.",
+    text: "반가워요! 오늘 기분과 당기는 맛을 알려주세요. 위치를 허용하면 가까운 곳부터 골라드릴게요.",
   },
 ];
 
 const QUICK_REPLIES = [
+  { label: "내 주변", prompt: "내 위치에서 가까운 라멘 추천해줘", useLocation: true },
+  { label: "스트레스 날리기", prompt: "오늘 화가 나는데 스트레스 풀고 싶어" },
   { label: "맑고 담백하게", prompt: "맑고 담백한 국물 추천해줘" },
   { label: "진하고 묵직하게", prompt: "진하고 묵직한 라멘 추천해줘" },
   { label: "찍어 먹는 면", prompt: "츠케멘 추천해줘" },
   { label: "비벼 먹는 면", prompt: "마제소바 추천해줘" },
-  { label: "얼큰하고 매콤하게", prompt: "매콤한 라멘 추천해줘" },
+  { label: "얼큰하게", prompt: "매콤한 라멘 추천해줘" },
 ];
 
 const MAP_LABELS = [
@@ -119,77 +140,65 @@ function normalized(value: string) {
   return value.trim().toLocaleLowerCase("ko-KR").replace(/\s+/g, " ");
 }
 
-function markerPosition(shop: RamenShop) {
-  const left = ((shop.lng - 125.4) / 4.7) * 100;
-  const top = ((38.8 - shop.lat) / 6.2) * 100;
+function markerPosition(point: Coordinates) {
+  const left = ((point.lng - 125.4) / 4.7) * 100;
+  const top = ((38.8 - point.lat) / 6.2) * 100;
   return {
     left: `${Math.min(92, Math.max(8, left))}%`,
     top: `${Math.min(92, Math.max(8, top))}%`,
   };
 }
 
-function getRecommendationReason(shop: RamenShop, prompt: string) {
-  const input = normalized(prompt);
-  const reasons: string[] = [];
-  if (/맑|담백|깔끔|시오|소금/.test(input) && shop.body <= 3)
-    reasons.push("가벼운 국물");
-  if (/진|묵직|꾸덕|농후|돈코츠/.test(input) && shop.body >= 4)
-    reasons.push("농도 높은 육수");
-  if (/매콤|매운|얼큰/.test(input) && shop.spiciness >= 3)
-    reasons.push("기분 좋은 매운맛");
-  if (/츠케|찍어/.test(input) && shop.types.includes("tsukemen"))
-    reasons.push("쫄깃한 츠케멘");
-  if (/마제|비벼/.test(input) && shop.types.includes("mazesoba"))
-    reasons.push("감칠맛 나는 비빔면");
-  if (/채식|비건/.test(input) && shop.vegetarian)
-    reasons.push("채식 옵션");
-  if (/돼지.*(빼|제외|없이)|돈육.*(빼|제외|없이)/.test(input) && !shop.containsPork)
-    reasons.push("돈육 없이 즐기는 메뉴");
-  return reasons.length ? reasons.slice(0, 2).join(" · ") : shop.tags.slice(0, 2).join(" · ");
+function isFallbackMapCoordinate(point: Coordinates) {
+  return point.lng >= 125.4 && point.lng <= 130.1 && point.lat >= 32.6 && point.lat <= 38.8;
 }
 
-function recommendShops(prompt: string, activeRegion: string) {
-  const input = normalized(prompt);
-  const mentionedRegion = REGIONS.find(
-    (item) => input.includes(normalized(item)),
-  );
-  const targetRegion = mentionedRegion ?? activeRegion;
+function locationStatusText(status: LocationStatus) {
+  if (status === "requesting") return "현재 위치를 확인하고 있어요";
+  if (status === "ready") return "내 위치 사용 중 · 직선거리 기준";
+  if (status === "permission-denied") return "위치 권한이 꺼져 있어요";
+  if (status === "unsupported") return "이 브라우저는 위치를 지원하지 않아요";
+  if (status === "timeout") return "위치 확인 시간이 초과됐어요";
+  if (status === "unavailable") return "현재 위치를 확인할 수 없어요";
+  return "허용하면 가까운 곳부터 추천해요";
+}
 
-  return RAMEN_SHOPS.map((shop) => {
-    let score = shop.rating;
-    if (targetRegion !== "전국" && shop.region === targetRegion) score += 9;
-    if (/맑|담백|깔끔|시오|소금/.test(input)) {
-      if (shop.body <= 3) score += 8;
-      if (shop.types.some((type) => type === "shio" || type === "shoyu")) score += 8;
-    }
-    if (/진|묵직|꾸덕|농후|돈코츠/.test(input)) {
-      if (shop.body >= 4) score += 9;
-      if (shop.types.some((type) => type === "tonkotsu" || type === "miso")) score += 7;
-    }
-    if (/매콤|매운|얼큰/.test(input) && shop.spiciness >= 3) score += 14;
-    if (/츠케|찍어/.test(input) && shop.types.includes("tsukemen")) score += 18;
-    if (/마제|비벼/.test(input) && shop.types.includes("mazesoba")) score += 18;
-    if (/쇼유|간장/.test(input) && shop.types.includes("shoyu")) score += 15;
-    if (/미소|된장/.test(input) && shop.types.includes("miso")) score += 15;
-    if (/채식|비건/.test(input)) score += shop.vegetarian ? 18 : -20;
-    if (/돼지.*(빼|제외|없이)|돈육.*(빼|제외|없이)/.test(input))
-      score += shop.containsPork ? -30 : 18;
-    if (shop.tags.some((tag) => input.includes(normalized(tag)))) score += 8;
-    return { shop, score };
-  })
-    .filter(({ shop }) => targetRegion === "전국" || shop.region === targetRegion)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
-    .map(({ shop }) => shop);
+function buildBotReply(result: RecommendationResult, locationUnavailable: boolean) {
+  const scope = result.nearbyUsed
+    ? "현재 위치에서 가까운 순으로"
+    : `${result.targetRegion === "전국" ? "전국" : result.targetRegion}에서`;
+  const count = result.recommendations.length;
+
+  if (!count) {
+    return "조건에 맞는 매장을 찾지 못했어요. 지역이나 취향을 조금 넓혀 다시 말해 주세요.";
+  }
+  if (locationUnavailable) {
+    return `위치를 확인하지 못해 ${scope} 조건에 가까운 ${count}곳을 골랐어요. 위치 권한을 허용하면 실제 가까운 순으로 다시 추천할게요.`;
+  }
+  if (result.intent.avoidSpicy) {
+    return `${scope} 매운맛은 빼고 편안하게 즐길 ${count}곳을 골랐어요.`;
+  }
+  if (result.strategy === "karai") {
+    return `${scope} 스트레스를 날릴 카라이 메뉴가 있는 ${count}곳을 골랐어요.`;
+  }
+  if (result.intent.wantsKarai && result.strategy === "spicy") {
+    return `${scope} 카라이 메뉴가 없어 화끈한 매운맛 메뉴 ${count}곳을 대신 골랐어요.`;
+  }
+  if (result.intent.wantsKarai) {
+    return `${scope} 카라이·고맵기 메뉴가 없어 현재 조건에 가까운 ${count}곳을 보여드려요.`;
+  }
+  return `${scope} 취향에 가까운 ${count}곳을 골랐어요. 추천 이유도 함께 확인해 보세요.`;
 }
 
 function RamenCard({
   shop,
   selected,
+  distanceKm,
   onSelect,
 }: {
   shop: RamenShop;
   selected: boolean;
+  distanceKm: number | null;
   onSelect: (shop: RamenShop) => void;
 }) {
   return (
@@ -214,6 +223,9 @@ function RamenCard({
         <i aria-hidden="true" />
         {shop.tags.slice(0, 2).join(" · ")}
       </span>
+      {distanceKm !== null ? (
+        <span className="ramen-card-distance">⌖ 내 위치에서 직선 {formatDistance(distanceKm)}</span>
+      ) : null}
       <span className="type-dots" aria-label={`종류: ${shop.types.map((type) => RAMEN_TYPE_LABELS[type]).join(", ")}`}>
         {shop.types.map((type) => (
           <span className={`type-dot type-${type}`} key={type}>
@@ -227,7 +239,7 @@ function RamenCard({
 
 export default function Home() {
   const [search, setSearch] = useState("");
-  const [region, setRegion] = useState("전국");
+  const [region, setRegion] = useState<(typeof ALL_REGIONS)[number]>("전국");
   const [selectedTypes, setSelectedTypes] = useState<RamenType[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapStatus, setMapStatus] = useState<MapStatus>(
@@ -236,13 +248,19 @@ export default function Home() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(INITIAL_CHAT);
+  const [chatBusy, setChatBusy] = useState(false);
   const [mobileListOpen, setMobileListOpen] = useState(true);
+  const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
 
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<unknown>(null);
   const kakaoRef = useRef<KakaoNamespace | null>(null);
   const clustererRef = useRef<unknown>(null);
   const markersRef = useRef<unknown[]>([]);
+  const userLocationOverlayRef = useRef<{ setMap: (map: unknown | null) => void } | null>(null);
+  const locationRequestRef = useRef<Promise<Coordinates | null> | null>(null);
+  const pendingChatRef = useRef(false);
   const messageIdRef = useRef(2);
 
   const filteredShops = useMemo(() => {
@@ -272,6 +290,30 @@ export default function Home() {
     [selectedId],
   );
 
+  const displayedShops = useMemo(() => {
+    const shops = filteredShops.map((shop) => ({
+      shop,
+      distanceKm: userLocation
+        ? distanceBetweenKm(userLocation, { lat: shop.lat, lng: shop.lng })
+        : null,
+    }));
+    if (!userLocation) return shops;
+    return shops.sort(
+      (left, right) => (left.distanceKm ?? 0) - (right.distanceKm ?? 0),
+    );
+  }, [filteredShops, userLocation]);
+
+  const selectedDistance = useMemo(
+    () =>
+      selectedShop && userLocation
+        ? distanceBetweenKm(userLocation, {
+            lat: selectedShop.lat,
+            lng: selectedShop.lng,
+          })
+        : null,
+    [selectedShop, userLocation],
+  );
+
   const toggleType = (type: RamenType) => {
     setSelectedTypes((current) =>
       current.includes(type)
@@ -291,6 +333,51 @@ export default function Home() {
   const selectShop = useCallback((shop: RamenShop) => {
     setSelectedId(shop.id);
   }, []);
+
+  const requestUserLocation = useCallback(async () => {
+    if (userLocation) return userLocation;
+    if (locationRequestRef.current) return locationRequestRef.current;
+
+    setLocationStatus("requesting");
+    const request = requestCurrentCoordinates(
+      typeof navigator === "undefined" ? undefined : navigator.geolocation,
+    )
+      .then((coordinates) => {
+        setUserLocation(coordinates);
+        setLocationStatus("ready");
+        return coordinates;
+      })
+      .catch((error: unknown) => {
+        setLocationStatus(
+          error instanceof LocationRequestError ? error.code : "unavailable",
+        );
+        return null;
+      })
+      .finally(() => {
+        locationRequestRef.current = null;
+      });
+
+    locationRequestRef.current = request;
+    return request;
+  }, [userLocation]);
+
+  const focusUserLocation = useCallback((coordinates: Coordinates) => {
+    if (!kakaoRef.current || !mapRef.current) return;
+    const maps = kakaoRef.current.maps as unknown as {
+      LatLng: new (lat: number, lng: number) => unknown;
+    };
+    const map = mapRef.current as {
+      panTo: (position: unknown) => void;
+      setLevel: (level: number) => void;
+    };
+    map.setLevel(7);
+    map.panTo(new maps.LatLng(coordinates.lat, coordinates.lng));
+  }, []);
+
+  const locateMe = useCallback(async () => {
+    const coordinates = await requestUserLocation();
+    if (coordinates) focusUserLocation(coordinates);
+  }, [focusUserLocation, requestUserLocation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -422,30 +509,89 @@ export default function Home() {
     );
   }, [mapStatus, selectedShop]);
 
-  const sendChat = (prompt: string) => {
+  useEffect(() => {
+    userLocationOverlayRef.current?.setMap(null);
+    userLocationOverlayRef.current = null;
+    if (!userLocation || mapStatus !== "ready" || !kakaoRef.current || !mapRef.current)
+      return;
+
+    const maps = kakaoRef.current.maps as unknown as {
+      LatLng: new (lat: number, lng: number) => unknown;
+      CustomOverlay: new (options: Record<string, unknown>) => {
+        setMap: (map: unknown | null) => void;
+      };
+    };
+    const content = document.createElement("div");
+    const dot = document.createElement("span");
+    const label = document.createElement("b");
+    content.className = "current-location-marker";
+    label.textContent = "내 위치";
+    content.append(dot, label);
+
+    const overlay = new maps.CustomOverlay({
+      position: new maps.LatLng(userLocation.lat, userLocation.lng),
+      content,
+      xAnchor: 0.5,
+      yAnchor: 0.5,
+      zIndex: 10,
+    });
+    overlay.setMap(mapRef.current);
+    userLocationOverlayRef.current = overlay;
+
+    return () => {
+      overlay.setMap(null);
+      if (userLocationOverlayRef.current === overlay) {
+        userLocationOverlayRef.current = null;
+      }
+    };
+  }, [mapStatus, userLocation]);
+
+  const sendChat = async (prompt: string, forceLocation = false) => {
     const cleanPrompt = prompt.trim();
-    if (!cleanPrompt) return;
-    const results = recommendShops(cleanPrompt, region);
+    if (!cleanPrompt || pendingChatRef.current) return;
+
+    pendingChatRef.current = true;
+    setChatBusy(true);
     const userId = messageIdRef.current++;
-    const botId = messageIdRef.current++;
     setChatMessages((current) => [
       ...current,
       { id: userId, role: "user", text: cleanPrompt },
-      {
-        id: botId,
-        role: "bot",
-        text: results.length
-          ? `${region === "전국" ? "전국" : region}에서 취향에 가까운 세 그릇을 찾았어요. 추천 이유도 함께 볼까요?`
-          : "조건에 맞는 매장을 찾지 못했어요. 지역이나 취향을 조금 넓혀 다시 말해 주세요.",
-        shopIds: results.map((shop) => shop.id),
-      },
     ]);
     setChatInput("");
+
+    try {
+      const intent = analyzeRecommendationIntent(cleanPrompt);
+      let coordinates = userLocation;
+      let locationUnavailable = false;
+      if ((forceLocation || intent.nearby) && !coordinates) {
+        coordinates = await requestUserLocation();
+        locationUnavailable = !coordinates;
+      }
+
+      const result = recommendShops(cleanPrompt, region, coordinates);
+      const botId = messageIdRef.current++;
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: botId,
+          role: "bot",
+          text: buildBotReply(result, locationUnavailable),
+          recommendations: result.recommendations.map((recommendation) => ({
+            shopId: recommendation.shop.id,
+            reason: recommendation.reason,
+            distanceKm: recommendation.distanceKm,
+          })),
+        },
+      ]);
+    } finally {
+      pendingChatRef.current = false;
+      setChatBusy(false);
+    }
   };
 
   const submitChat = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    sendChat(chatInput);
+    void sendChat(chatInput);
   };
 
   const showRecommendedShop = (shop: RamenShop) => {
@@ -518,7 +664,7 @@ export default function Home() {
                 <select
                   value={region}
                   onChange={(event) => {
-                    setRegion(event.target.value);
+                    setRegion(event.target.value as (typeof ALL_REGIONS)[number]);
                     setSelectedId(null);
                   }}
                   aria-label="지역 선택"
@@ -568,11 +714,12 @@ export default function Home() {
 
           <div className="results-list" data-testid="shop-list">
             {filteredShops.length ? (
-              filteredShops.map((shop) => (
+              displayedShops.map(({ shop, distanceKm }) => (
                 <RamenCard
                   key={shop.id}
                   shop={shop}
                   selected={shop.id === selectedId}
+                  distanceKm={distanceKm}
                   onSelect={selectShop}
                 />
               ))
@@ -593,10 +740,27 @@ export default function Home() {
               <i aria-hidden="true" />
               {mapStatusLabel}
             </span>
-            <button type="button" onClick={resetFilters}>
-              <span aria-hidden="true">⌂</span>
-              전국 보기
-            </button>
+            <div className="map-toolbar-actions">
+              <button
+                className={`locate-button status-${locationStatus}`}
+                type="button"
+                onClick={() => void locateMe()}
+                disabled={locationStatus === "requesting"}
+                aria-label="내 위치를 사용해 가까운 라멘 찾기"
+                data-testid="locate-button"
+              >
+                <span aria-hidden="true">◎</span>
+                {locationStatus === "requesting"
+                  ? "위치 확인 중"
+                  : locationStatus === "ready"
+                    ? "내 위치 사용 중"
+                    : "내 위치"}
+              </button>
+              <button type="button" onClick={resetFilters}>
+                <span aria-hidden="true">⌂</span>
+                전국 보기
+              </button>
+            </div>
           </div>
 
           <div className="kakao-map" ref={mapElementRef} aria-hidden={mapStatus !== "ready"} />
@@ -624,6 +788,18 @@ export default function Home() {
                   <span>{RAMEN_TYPE_LABELS[shop.types[0]].slice(0, 1)}</span>
                 </button>
               ))}
+              {userLocation && isFallbackMapCoordinate(userLocation) ? (
+                <div
+                  className="fallback-user-marker"
+                  style={markerPosition(userLocation)}
+                  role="img"
+                  aria-label="내 현재 위치"
+                  data-testid="fallback-user-marker"
+                >
+                  <span />
+                  <b>내 위치</b>
+                </div>
+              ) : null}
               <div className="map-credit">KAKAO MAP READY · API KEY REQUIRED</div>
             </div>
           ) : null}
@@ -647,7 +823,12 @@ export default function Home() {
               <div className="selected-shop-head">
                 <span className="shop-number">#{String(RAMEN_SHOPS.indexOf(selectedShop) + 1).padStart(2, "0")}</span>
                 <div>
-                  <small>{selectedShop.region} · {selectedShop.district} · DEMO</small>
+                  <small>
+                    {selectedShop.region} · {selectedShop.district} · DEMO
+                    {selectedDistance !== null
+                      ? ` · 직선 ${formatDistance(selectedDistance)}`
+                      : ""}
+                  </small>
                   <h2>{selectedShop.name}</h2>
                 </div>
               </div>
@@ -696,7 +877,7 @@ export default function Home() {
             <div className="bot-avatar" aria-hidden="true">ら</div>
             <div>
               <strong>한그릇 추천봇</strong>
-              <span><i /> 취향 분석 중</span>
+              <span><i /> {chatBusy ? "추천을 고르는 중" : "기분·취향 분석 준비"}</span>
             </div>
             <button type="button" onClick={() => setChatOpen(false)} aria-label="추천봇 닫기">×</button>
           </header>
@@ -704,15 +885,26 @@ export default function Home() {
             {chatMessages.map((message) => (
               <div className={`chat-message ${message.role}`} key={message.id}>
                 <p>{message.text}</p>
-                {message.shopIds?.map((shopId) => {
-                  const shop = RAMEN_SHOPS.find((item) => item.id === shopId);
+                {message.recommendations?.map((recommendation) => {
+                  const shop = RAMEN_SHOPS.find((item) => item.id === recommendation.shopId);
                   if (!shop) return null;
                   return (
-                    <button className="chat-recommendation" type="button" key={shop.id} onClick={() => showRecommendedShop(shop)}>
+                    <button
+                      className="chat-recommendation"
+                      type="button"
+                      key={shop.id}
+                      onClick={() => showRecommendedShop(shop)}
+                      data-testid={`chat-recommendation-${shop.id}`}
+                    >
                       <span>
-                        <small>{shop.region} · {RAMEN_TYPE_LABELS[shop.types[0]]}</small>
+                        <small>
+                          {shop.region} · {RAMEN_TYPE_LABELS[shop.types[0]]}
+                          {recommendation.distanceKm !== null
+                            ? ` · 직선 ${formatDistance(recommendation.distanceKm)}`
+                            : ""}
+                        </small>
                         <strong>{shop.name}</strong>
-                        <em>{getRecommendationReason(shop, chatMessages.find((item) => item.id === message.id - 1)?.text ?? "")}</em>
+                        <em>{recommendation.reason}</em>
                       </span>
                       <b>보기</b>
                     </button>
@@ -721,9 +913,28 @@ export default function Home() {
               </div>
             ))}
           </div>
+          <div className={`chat-location status-${locationStatus}`} role="status">
+            <button
+              type="button"
+              onClick={() => void requestUserLocation()}
+              disabled={locationStatus === "requesting"}
+              aria-label="내 위치 기반 주변 추천 사용"
+            >
+              <span aria-hidden="true">◎</span>
+              <b>내 위치 기반 추천</b>
+            </button>
+            <span>{locationStatusText(locationStatus)}</span>
+          </div>
           <div className="quick-replies" aria-label="빠른 취향 선택">
             {QUICK_REPLIES.map((reply) => (
-              <button type="button" key={reply.label} onClick={() => sendChat(reply.prompt)}>{reply.label}</button>
+              <button
+                type="button"
+                key={reply.label}
+                onClick={() => void sendChat(reply.prompt, reply.useLocation)}
+                disabled={chatBusy}
+              >
+                {reply.label}
+              </button>
             ))}
           </div>
           <form className="chat-form" onSubmit={submitChat}>
@@ -732,13 +943,14 @@ export default function Home() {
               <input
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
-                placeholder="예: 서울에서 돼지고기 없이 담백하게"
+                placeholder="예: 오늘 화가 나서 스트레스를 풀고 싶어"
                 data-testid="chat-input"
+                disabled={chatBusy}
               />
             </label>
-            <button type="submit" aria-label="추천 요청 보내기">↑</button>
+            <button type="submit" aria-label="추천 요청 보내기" disabled={chatBusy}>↑</button>
           </form>
-          <p className="chat-disclaimer">데모 매장 데이터 안에서만 추천해요.</p>
+          <p className="chat-disclaimer">창작 데모 매장 기준 · 위치는 저장하지 않으며 거리는 직선거리예요.</p>
         </section>
       ) : (
         <div className="chat-launch-wrap">

@@ -51,9 +51,13 @@ test("keeps map integration, filters, and demo data explicit", async () => {
   assert.match(page, /NEXT_PUBLIC_KAKAO_MAP_KEY/);
   assert.match(page, /RAMEN_TYPE_LABELS/);
   assert.match(page, /recommendShops/);
+  assert.match(page, /navigator\.geolocation/);
+  assert.match(page, /내 위치 기반 주변 추천 사용/);
+  assert.match(page, /직선거리/);
   assert.match(data, /export const RAMEN_SHOPS/);
   assert.equal((data.match(/id: "demo-/g) ?? []).length, 24);
   assert.match(data, /실제 매장 아님/);
+  assert.match(data, /카라이 돈코츠라멘/);
   assert.match(layout, /og\.png/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });

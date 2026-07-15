@@ -595,6 +595,16 @@ select:focus-visible {
   background: #aaa69d;
 }
 
+.ramen-card-distance {
+  width: fit-content;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #f3ebe0;
+  color: #9b553e;
+  font-size: 8px;
+  font-weight: 850;
+}
+
 .type-dots {
   display: flex;
   flex-wrap: wrap;
@@ -793,6 +803,59 @@ select:focus-visible {
   transform: translate(-50%, -50%) rotate(-45deg) scale(1.2);
 }
 
+.fallback-user-marker {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.fallback-user-marker > span,
+.current-location-marker > span {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #2878e3;
+  box-shadow: 0 3px 11px rgba(20, 80, 164, 0.4);
+}
+
+.fallback-user-marker > span::before,
+.current-location-marker > span::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  z-index: -1;
+  border-radius: 50%;
+  background: rgba(40, 120, 227, 0.2);
+  animation: locationPulse 1.8s ease-out infinite;
+}
+
+.fallback-user-marker b,
+.current-location-marker b {
+  padding: 5px 7px;
+  border: 1px solid rgba(40, 89, 158, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 4px 12px rgba(35, 65, 98, 0.16);
+  color: #215b9e;
+  font-size: 8px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.current-location-marker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
 .map-credit {
   position: absolute;
   right: 16px;
@@ -822,7 +885,7 @@ select:focus-visible {
 }
 
 .map-status,
-.map-toolbar > button {
+.map-toolbar-actions button {
   min-height: 38px;
   display: inline-flex;
   align-items: center;
@@ -836,6 +899,12 @@ select:focus-visible {
   color: #4f534b;
   font-size: 11px;
   font-weight: 800;
+}
+
+.map-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .map-status i {
@@ -859,17 +928,31 @@ select:focus-visible {
   background: var(--red);
 }
 
-.map-toolbar > button {
+.map-toolbar-actions button {
   cursor: pointer;
 }
 
-.map-toolbar > button:hover {
+.map-toolbar-actions button:hover:not(:disabled) {
   background: #fff;
 }
 
-.map-toolbar > button span {
+.map-toolbar-actions button span {
   color: var(--red);
   font-size: 17px;
+}
+
+.map-toolbar-actions button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.locate-button.status-ready {
+  border-color: rgba(40, 120, 227, 0.3);
+  color: #245f9f;
+}
+
+.locate-button.status-ready span {
+  color: #2878e3;
 }
 
 .map-notice {
@@ -1352,6 +1435,62 @@ select:focus-visible {
   font-size: 8px;
 }
 
+.chat-location {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px 2px;
+  background: #fffdf8;
+}
+
+.chat-location > button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #d8d1c5;
+  border-radius: 9px;
+  background: #f7f1e7;
+  color: #5e625a;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.chat-location > button span {
+  color: #2878e3;
+  font-size: 14px;
+}
+
+.chat-location > button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.chat-location > span {
+  min-width: 0;
+  overflow: hidden;
+  color: #969188;
+  font-size: 8px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-location.status-ready > button {
+  border-color: rgba(40, 120, 227, 0.25);
+  background: #edf5ff;
+  color: #245f9f;
+}
+
+.chat-location.status-permission-denied > span,
+.chat-location.status-unavailable > span,
+.chat-location.status-timeout > span,
+.chat-location.status-unsupported > span {
+  color: #a6573d;
+}
+
 .quick-replies {
   flex: 0 0 auto;
   display: flex;
@@ -1382,6 +1521,13 @@ select:focus-visible {
 .quick-replies button:hover {
   border-color: var(--red);
   color: var(--red-deep);
+}
+
+.quick-replies button:disabled,
+.chat-form button:disabled,
+.chat-form input:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .chat-form {
@@ -1438,6 +1584,11 @@ select:focus-visible {
 @keyframes mapPulse {
   0%, 100% { opacity: 0.5; transform: scale(0.9); }
   50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes locationPulse {
+  0% { opacity: 0.75; transform: scale(0.45); }
+  75%, 100% { opacity: 0; transform: scale(1.35); }
 }
 
 @keyframes cardIn {
@@ -1628,7 +1779,7 @@ select:focus-visible {
     right: 12px;
   }
 
-  .map-toolbar > button,
+  .map-toolbar-actions button,
   .map-status {
     min-height: 34px;
   }
@@ -1704,9 +1855,20 @@ select:focus-visible {
     font-size: 9px;
   }
 
-  .map-toolbar > button {
+  .map-toolbar-actions {
+    gap: 5px;
+  }
+
+  .map-toolbar-actions button {
     padding: 0 10px;
     font-size: 9px;
+  }
+
+  .locate-button {
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .map-notice {
