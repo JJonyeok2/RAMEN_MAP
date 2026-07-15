@@ -1,6 +1,7 @@
 import {
   RAMEN_SHOPS,
   REGIONS,
+  type BrothStyle,
   type RamenShop,
   type Region,
 } from "./ramen-data.ts";
@@ -15,6 +16,8 @@ export type RecommendationIntent = {
   spicy: boolean;
   wantsKarai: boolean;
   avoidSpicy: boolean;
+  avoidRich: boolean;
+  preferredBrothStyle: BrothStyle | null;
   nearby: boolean;
   mentionedRegion: Region | null;
 };
@@ -31,6 +34,7 @@ export type RecommendationResult = {
   recommendations: RankedRecommendation[];
   intent: RecommendationIntent;
   strategy: RecommendationStrategy;
+  brothMatch: BrothStyle | null;
   targetRegion: Region | "전국";
   nearbyUsed: boolean;
 };
@@ -42,6 +46,23 @@ const AVOID_SPICY_PATTERN =
   /안\s*매운|맵지\s*않|매운\s*(?:건|거|것|맛)?\s*(?:싫|못|빼|제외|없이)|맵찔|순한\s*(?:맛|걸|거)|매운맛\s*(?:빼|제외|없이)/;
 const NEARBY_PATTERN = /근처|주변|가까운|내\s*위치|현재\s*위치|동네/;
 const AVOID_PORK_PATTERN = /돼지.*(?:빼|제외|없이)|돈육.*(?:빼|제외|없이)/;
+const AVOID_RICH_PATTERN =
+  /느끼(?:한|함|해서)?\s*(?:건|거|것|맛)?\s*(?:싫|못|별로|부담|빼|제외)|느끼하지\s*않|안\s*느끼|기름진.*(?:싫|못|별로|부담|빼|제외)|기름기\s*(?:적|없)/;
+const RICH_ALLOWED_PATTERN =
+  /(?:느끼|기름진|헤비).{0,12}(?:괜찮|좋아|상관\s*없|안\s*싫|싫(?:진|지는|지)\s*않)|느끼하지\s*않아도\s*(?:돼|괜찮)/;
+const CHINTAN_TERM_PATTERN = /(?:청탕|친탄|치탄|chintan)/i;
+const PAITAN_TERM_PATTERN = /(?:백탕|파이탄|빠이탄|paitan)/i;
+const AVOID_CHINTAN_PATTERN =
+  /(?:청탕|친탄|치탄|chintan)(?:은|는|이|가|을|를|도)?\s*(?:말고|싫|별로|빼|제외|안\s*(?:먹|당기|땡기|원)|원하지\s*않|필요\s*없)/i;
+const AVOID_PAITAN_PATTERN =
+  /(?:백탕|파이탄|빠이탄|paitan)(?:은|는|이|가|을|를|도)?\s*(?:말고|싫|별로|빼|제외|안\s*(?:먹|당기|땡기|원)|원하지\s*않|필요\s*없)|(?:백탕|파이탄|빠이탄|paitan).{0,10}느끼.{0,8}(?:싫|부담|못|별로|빼|제외)/i;
+const BROTH_NEUTRAL_PATTERN =
+  /(?=.*(?:청탕|친탄|치탄|chintan))(?=.*(?:백탕|파이탄|빠이탄|paitan)).*(?:상관\s*없|아무거나|둘\s*다|어느\s*쪽이든)/i;
+const CLEAN_BROTH_PATTERN =
+  /(?:맑(?:은|게)?|담백(?:한|하게)?|깔끔(?:한|하게)?|개운(?:한|하게)?|산뜻(?:한|하게)?)(?:\s*(?:국물|육수|라멘|걸|것))?|가벼운\s*(?:국물|육수)|클리어\s*(?:국물|육수)|시원(?:한|하게)?\s*(?:국물|육수|라멘)/;
+const RICH_BROTH_PATTERN =
+  /(?:뽀얀|크리미(?:한|하게)?|농후(?:한|하게)?|진하고\s*뽀얀)\s*(?:국물|육수|라멘)/;
+const DRY_OR_DIPPING_PATTERN = /마제|비벼|비빔|츠케|찍어/;
 
 export function normalizeText(value: string) {
   return value.trim().toLocaleLowerCase("ko-KR").replace(/\s+/g, " ");
@@ -50,15 +71,45 @@ export function normalizeText(value: string) {
 export function analyzeRecommendationIntent(prompt: string): RecommendationIntent {
   const input = normalizeText(prompt);
   const avoidSpicy = AVOID_SPICY_PATTERN.test(input);
+  const avoidRich =
+    AVOID_RICH_PATTERN.test(input) && !RICH_ALLOWED_PATTERN.test(input);
   const stressRelief = STRESS_RELIEF_PATTERN.test(input);
   const explicitKarai = input.includes("카라이");
   const spicy = !avoidSpicy && (stressRelief || EXPLICIT_SPICY_PATTERN.test(input));
+  const explicitChintan = CHINTAN_TERM_PATTERN.test(input);
+  const explicitPaitan = PAITAN_TERM_PATTERN.test(input);
+  const avoidChintan = AVOID_CHINTAN_PATTERN.test(input);
+  const avoidPaitan = AVOID_PAITAN_PATTERN.test(input);
+  const brothNeutral = BROTH_NEUTRAL_PATTERN.test(input);
+  const positiveChintan = explicitChintan && !avoidChintan;
+  const positivePaitan = explicitPaitan && !avoidPaitan;
+  let preferredBrothStyle: BrothStyle | null = null;
+
+  if (!brothNeutral) {
+    if (positiveChintan && !positivePaitan) {
+      preferredBrothStyle = "chintan";
+    } else if (positivePaitan && !positiveChintan) {
+      preferredBrothStyle = "paitan";
+    } else if (
+      !positiveChintan &&
+      !positivePaitan &&
+      !DRY_OR_DIPPING_PATTERN.test(input)
+    ) {
+      if (avoidRich || CLEAN_BROTH_PATTERN.test(input)) {
+        preferredBrothStyle = "chintan";
+      } else if (RICH_BROTH_PATTERN.test(input)) {
+        preferredBrothStyle = "paitan";
+      }
+    }
+  }
 
   return {
     stressRelief,
     spicy,
     wantsKarai: spicy && (stressRelief || explicitKarai),
     avoidSpicy,
+    avoidRich,
+    preferredBrothStyle,
     nearby: NEARBY_PATTERN.test(input),
     mentionedRegion:
       REGIONS.find((region) => input.includes(normalizeText(region))) ?? null,
@@ -94,8 +145,13 @@ export function formatDistance(distanceKm: number) {
   return `${Math.round(distanceKm).toLocaleString("ko-KR")}km`;
 }
 
-function preferenceScore(shop: RamenShop, input: string) {
+function preferenceScore(
+  shop: RamenShop,
+  input: string,
+  intent: RecommendationIntent,
+) {
   let score = shop.rating;
+  if (intent.avoidRich) score += (6 - shop.body) * 8;
   if (/맑|담백|깔끔|시오|소금/.test(input)) {
     if (shop.body <= 3) score += 8;
     if (shop.types.some((type) => type === "shio" || type === "shoyu")) score += 8;
@@ -121,6 +177,19 @@ export function getRecommendationReason(
   const intent = analyzeRecommendationIntent(prompt);
   const reasons: string[] = [];
 
+  if (
+    intent.avoidRich &&
+    intent.preferredBrothStyle === "paitan" &&
+    shop.brothStyle === "paitan"
+  ) {
+    reasons.push("백탕 중 비교적 가벼운 편");
+  } else if (intent.avoidRich && shop.brothStyle === "chintan") {
+    reasons.push("느끼함 적은 맑은 청탕");
+  } else if (intent.preferredBrothStyle === "chintan" && shop.brothStyle === "chintan") {
+    reasons.push("맑고 깔끔한 청탕");
+  } else if (intent.preferredBrothStyle === "paitan" && shop.brothStyle === "paitan") {
+    reasons.push("진하고 뽀얀 백탕");
+  }
   if (strategy === "karai" && hasKaraiMenu(shop)) {
     reasons.push(intent.stressRelief ? "스트레스를 날릴 카라이 메뉴" : "카라이 메뉴");
   } else if (strategy === "spicy" && shop.spiciness >= 3) {
@@ -169,6 +238,14 @@ export function recommendShops(
     candidates = candidates.filter((shop) => !shop.containsPork);
   }
 
+  let brothMatch: BrothStyle | null = null;
+  if (intent.preferredBrothStyle) {
+    candidates = candidates.filter(
+      (shop) => shop.brothStyle === intent.preferredBrothStyle,
+    );
+    if (candidates.length) brothMatch = intent.preferredBrothStyle;
+  }
+
   let strategy: RecommendationStrategy = "taste";
   if (intent.wantsKarai) {
     const karaiMatches = candidates.filter(hasKaraiMenu);
@@ -191,7 +268,7 @@ export function recommendShops(
   const ranked = candidates
     .map((shop) => ({
       shop,
-      score: preferenceScore(shop, input),
+      score: preferenceScore(shop, input, intent),
       distanceKm: userLocation
         ? distanceBetweenKm(userLocation, { lat: shop.lat, lng: shop.lng })
         : null,
@@ -217,6 +294,7 @@ export function recommendShops(
     recommendations: ranked,
     intent,
     strategy,
+    brothMatch,
     targetRegion,
     nearbyUsed: Boolean(userLocation),
   };

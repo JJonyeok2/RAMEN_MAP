@@ -9,9 +9,11 @@ import {
   useState,
 } from "react";
 import {
+  BROTH_STYLE_LABELS,
   RAMEN_SHOPS,
   RAMEN_TYPE_LABELS,
   REGIONS,
+  type BrothStyle,
   type RamenShop,
   type RamenType,
 } from "./ramen-data";
@@ -69,6 +71,7 @@ const INITIAL_CHAT: ChatMessage[] = [
 const QUICK_REPLIES = [
   { label: "내 주변", prompt: "내 위치에서 가까운 라멘 추천해줘", useLocation: true },
   { label: "스트레스 날리기", prompt: "오늘 화가 나는데 스트레스 풀고 싶어" },
+  { label: "느끼하지 않게", prompt: "느끼한 건 싫어. 시원하고 깔끔한 국물로 추천해줘" },
   { label: "맑고 담백하게", prompt: "맑고 담백한 국물 추천해줘" },
   { label: "진하고 묵직하게", prompt: "진하고 묵직한 라멘 추천해줘" },
   { label: "찍어 먹는 면", prompt: "츠케멘 추천해줘" },
@@ -170,6 +173,12 @@ function buildBotReply(result: RecommendationResult, locationUnavailable: boolea
   const count = result.recommendations.length;
 
   if (!count) {
+    if (result.intent.preferredBrothStyle === "chintan") {
+      return `${result.targetRegion === "전국" ? "현재 조건" : result.targetRegion}에는 깔끔한 청탕 메뉴가 없어요. 지역을 넓혀 다시 찾아보세요.`;
+    }
+    if (result.intent.preferredBrothStyle === "paitan") {
+      return `${result.targetRegion === "전국" ? "현재 조건" : result.targetRegion}에는 백탕 메뉴가 없어요. 지역을 넓혀 다시 찾아보세요.`;
+    }
     return "조건에 맞는 매장을 찾지 못했어요. 지역이나 취향을 조금 넓혀 다시 말해 주세요.";
   }
   if (locationUnavailable) {
@@ -177,6 +186,18 @@ function buildBotReply(result: RecommendationResult, locationUnavailable: boolea
   }
   if (result.intent.avoidSpicy) {
     return `${scope} 매운맛은 빼고 편안하게 즐길 ${count}곳을 골랐어요.`;
+  }
+  if (result.intent.avoidRich && result.brothMatch === "chintan") {
+    return `${scope} 느끼함이 적고 끝맛이 깔끔한 청탕 메뉴 ${count}곳을 골랐어요.`;
+  }
+  if (result.intent.avoidRich && result.brothMatch === "paitan") {
+    return `${scope} 백탕 중 국물 농도가 비교적 가벼운 ${count}곳을 골랐어요.`;
+  }
+  if (result.brothMatch === "chintan") {
+    return `${scope} 맑고 개운한 청탕 메뉴 ${count}곳을 골랐어요.`;
+  }
+  if (result.brothMatch === "paitan") {
+    return `${scope} 진하고 뽀얀 백탕 메뉴 ${count}곳을 골랐어요.`;
   }
   if (result.strategy === "karai") {
     return `${scope} 스트레스를 날릴 카라이 메뉴가 있는 ${count}곳을 골랐어요.`;
@@ -226,7 +247,13 @@ function RamenCard({
       {distanceKm !== null ? (
         <span className="ramen-card-distance">⌖ 내 위치에서 직선 {formatDistance(distanceKm)}</span>
       ) : null}
-      <span className="type-dots" aria-label={`종류: ${shop.types.map((type) => RAMEN_TYPE_LABELS[type]).join(", ")}`}>
+      <span
+        className="type-dots"
+        aria-label={`대표 메뉴 분류: ${BROTH_STYLE_LABELS[shop.brothStyle]}; 종류: ${shop.types.map((type) => RAMEN_TYPE_LABELS[type]).join(", ")}`}
+      >
+        <span className={`broth-style-badge broth-${shop.brothStyle}`}>
+          {BROTH_STYLE_LABELS[shop.brothStyle]}
+        </span>
         {shop.types.map((type) => (
           <span className={`type-dot type-${type}`} key={type}>
             {RAMEN_TYPE_LABELS[type]}
@@ -241,6 +268,7 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [region, setRegion] = useState<(typeof ALL_REGIONS)[number]>("전국");
   const [selectedTypes, setSelectedTypes] = useState<RamenType[]>([]);
+  const [selectedBrothStyles, setSelectedBrothStyles] = useState<BrothStyle[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapStatus, setMapStatus] = useState<MapStatus>(
     KAKAO_APP_KEY ? "loading" : "missing",
@@ -272,6 +300,7 @@ export default function Home() {
           shop.signature,
           shop.region,
           shop.district,
+          BROTH_STYLE_LABELS[shop.brothStyle],
           shop.tags.join(" "),
           shop.types.map((type) => RAMEN_TYPE_LABELS[type]).join(" "),
         ].join(" "),
@@ -281,9 +310,12 @@ export default function Home() {
       const matchesType =
         selectedTypes.length === 0 ||
         selectedTypes.some((type) => shop.types.includes(type));
-      return matchesQuery && matchesRegion && matchesType;
+      const matchesBrothStyle =
+        selectedBrothStyles.length === 0 ||
+        selectedBrothStyles.includes(shop.brothStyle);
+      return matchesQuery && matchesRegion && matchesType && matchesBrothStyle;
     });
-  }, [region, search, selectedTypes]);
+  }, [region, search, selectedBrothStyles, selectedTypes]);
 
   const selectedShop = useMemo(
     () => RAMEN_SHOPS.find((shop) => shop.id === selectedId) ?? null,
@@ -323,10 +355,20 @@ export default function Home() {
     setSelectedId(null);
   };
 
+  const toggleBrothStyle = (style: BrothStyle) => {
+    setSelectedBrothStyles((current) =>
+      current.includes(style)
+        ? current.filter((item) => item !== style)
+        : [...current, style],
+    );
+    setSelectedId(null);
+  };
+
   const resetFilters = () => {
     setSearch("");
     setRegion("전국");
     setSelectedTypes([]);
+    setSelectedBrothStyles([]);
     setSelectedId(null);
   };
 
@@ -598,6 +640,7 @@ export default function Home() {
     setSearch("");
     setRegion("전국");
     setSelectedTypes([]);
+    setSelectedBrothStyles([]);
     setSelectedId(shop.id);
     setMobileListOpen(false);
   };
@@ -680,27 +723,55 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="filter-heading">
-              <span>메뉴로 골라보기</span>
-              <small>여러 개 선택 가능</small>
-            </div>
-            <div className="type-filters" aria-label="라멘 종류 필터">
-              {(Object.keys(RAMEN_TYPE_LABELS) as RamenType[]).map((type) => {
-                const active = selectedTypes.includes(type);
-                return (
-                  <button
-                    type="button"
-                    key={type}
-                    className={`type-filter type-${type}${active ? " active" : ""}`}
-                    aria-pressed={active}
-                    onClick={() => toggleType(type)}
-                    data-testid={`type-${type}`}
-                  >
-                    <span aria-hidden="true" />
-                    {RAMEN_TYPE_LABELS[type]}
-                  </button>
-                );
-              })}
+            <div className="filter-groups">
+              <div className="filter-group">
+                <div className="filter-heading">
+                  <span>메뉴로 골라보기</span>
+                  <small>여러 개 선택 가능</small>
+                </div>
+                <div className="type-filters" aria-label="라멘 종류 필터">
+                  {(Object.keys(RAMEN_TYPE_LABELS) as RamenType[]).map((type) => {
+                    const active = selectedTypes.includes(type);
+                    return (
+                      <button
+                        type="button"
+                        key={type}
+                        className={`type-filter type-${type}${active ? " active" : ""}`}
+                        aria-pressed={active}
+                        onClick={() => toggleType(type)}
+                        data-testid={`type-${type}`}
+                      >
+                        <span aria-hidden="true" />
+                        {RAMEN_TYPE_LABELS[type]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="filter-group">
+                <div className="filter-heading broth-filter-heading">
+                  <span>대표 메뉴 스타일</span>
+                  <small>청탕·백탕 등</small>
+                </div>
+                <div className="broth-filters" aria-label="대표 메뉴 국물 스타일 필터">
+                  {(Object.keys(BROTH_STYLE_LABELS) as BrothStyle[]).map((style) => {
+                    const active = selectedBrothStyles.includes(style);
+                    return (
+                      <button
+                        type="button"
+                        key={style}
+                        className={`type-filter broth-filter broth-${style}${active ? " active" : ""}`}
+                        aria-pressed={active}
+                        onClick={() => toggleBrothStyle(style)}
+                        data-testid={`broth-${style}`}
+                      >
+                        <span aria-hidden="true" />
+                        {BROTH_STYLE_LABELS[style]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -727,7 +798,7 @@ export default function Home() {
               <div className="empty-state">
                 <span aria-hidden="true">∿</span>
                 <strong>조건에 맞는 한 그릇이 없어요</strong>
-                <p>지역이나 메뉴 필터를 조금 넓혀보세요.</p>
+                <p>지역이나 메뉴·국물 필터를 조금 넓혀보세요.</p>
                 <button type="button" onClick={resetFilters}>전체 라멘 보기</button>
               </div>
             )}
@@ -833,7 +904,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="signature-box">
-                <span>대표 한 그릇</span>
+                <span>대표 한 그릇 · {BROTH_STYLE_LABELS[selectedShop.brothStyle]}</span>
                 <strong>{selectedShop.signature}</strong>
                 <b>{formatPrice(selectedShop.price)}</b>
               </div>
@@ -898,7 +969,7 @@ export default function Home() {
                     >
                       <span>
                         <small>
-                          {shop.region} · {RAMEN_TYPE_LABELS[shop.types[0]]}
+                          {shop.region} · {BROTH_STYLE_LABELS[shop.brothStyle]} · {RAMEN_TYPE_LABELS[shop.types[0]]}
                           {recommendation.distanceKm !== null
                             ? ` · 직선 ${formatDistance(recommendation.distanceKm)}`
                             : ""}

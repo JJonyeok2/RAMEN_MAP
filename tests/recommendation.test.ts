@@ -7,6 +7,7 @@ import {
   hasKaraiMenu,
   recommendShops,
 } from "../app/recommendation.ts";
+import { BROTH_STYLE_LABELS, RAMEN_SHOPS } from "../app/ramen-data.ts";
 
 test("maps anger and stress language to exact karai menu recommendations", () => {
   const result = recommendShops(
@@ -92,4 +93,109 @@ test("calculates haversine distance deterministically", () => {
     { lat: 37.5446, lng: 127.0561 },
   );
   assert.ok(Math.abs(distance - 11.827) < 0.02);
+});
+
+test("classifies every representative menu with a supported broth style", () => {
+  assert.equal(RAMEN_SHOPS.length, 24);
+  assert.ok(
+    RAMEN_SHOPS.every((shop) => shop.brothStyle in BROTH_STYLE_LABELS),
+  );
+  assert.deepEqual(
+    RAMEN_SHOPS.reduce<Record<string, number>>((counts, shop) => {
+      counts[shop.brothStyle] = (counts[shop.brothStyle] ?? 0) + 1;
+      return counts;
+    }, {}),
+    { chintan: 11, paitan: 9, dry: 2, dipping: 2 },
+  );
+});
+
+test("infers chintan from greasy-food rejection", () => {
+  const result = recommendShops("느끼한 건 싫어", "전국");
+
+  assert.equal(result.intent.avoidRich, true);
+  assert.equal(result.intent.preferredBrothStyle, "chintan");
+  assert.equal(result.brothMatch, "chintan");
+  assert.ok(
+    result.recommendations.every(({ shop }) => shop.brothStyle === "chintan"),
+  );
+  assert.match(result.recommendations[0].reason, /느끼함.*청탕/);
+});
+
+test("honors explicit chintan and paitan requests", () => {
+  const chintan = recommendShops("청탕 추천해줘", "전국");
+  const paitan = recommendShops("백탕 추천해줘", "전국");
+
+  assert.equal(chintan.intent.preferredBrothStyle, "chintan");
+  assert.ok(
+    chintan.recommendations.every(({ shop }) => shop.brothStyle === "chintan"),
+  );
+  assert.equal(paitan.intent.preferredBrothStyle, "paitan");
+  assert.deepEqual(
+    paitan.recommendations.map(({ shop }) => shop.id),
+    [
+      "demo-jeju-seogwipo-024",
+      "demo-jeonbuk-jeonju-018",
+      "demo-busan-busanjin-003",
+    ],
+  );
+});
+
+test("style negation selects the other explicitly requested broth", () => {
+  assert.equal(
+    analyzeRecommendationIntent("백탕 말고 청탕").preferredBrothStyle,
+    "chintan",
+  );
+  assert.equal(
+    analyzeRecommendationIntent("청탕 말고 백탕").preferredBrothStyle,
+    "paitan",
+  );
+});
+
+test("neutral broth wording does not choose one arbitrarily", () => {
+  assert.equal(
+    analyzeRecommendationIntent("청탕이든 백탕이든 상관없어")
+      .preferredBrothStyle,
+    null,
+  );
+});
+
+test("double negation does not infer chintan", () => {
+  for (const prompt of [
+    "느끼한 건 안 싫어",
+    "느끼해도 괜찮아",
+    "느끼하지 않아도 돼",
+  ]) {
+    const intent = analyzeRecommendationIntent(prompt);
+    assert.equal(intent.avoidRich, false);
+    assert.equal(intent.preferredBrothStyle, null);
+  }
+});
+
+test("explicit paitan wins over inferred anti-rich style", () => {
+  const result = recommendShops("느끼하지 않은 백탕", "전국");
+
+  assert.equal(result.intent.avoidRich, true);
+  assert.equal(result.intent.preferredBrothStyle, "paitan");
+  assert.ok(
+    result.recommendations.every(({ shop }) => shop.brothStyle === "paitan"),
+  );
+  assert.deepEqual(
+    result.recommendations.map(({ shop }) => shop.id),
+    [
+      "demo-jeonbuk-jeonju-018",
+      "demo-gwangju-dong-009",
+      "demo-gyeonggi-suwon-013",
+    ],
+  );
+  assert.match(result.recommendations[0].reason, /백탕 중 비교적 가벼운 편/);
+});
+
+test("dry and dipping requests suppress descriptive broth inference", () => {
+  for (const prompt of [
+    "깔끔한 마제소바",
+    "시원한 츠케멘",
+    "크리미한 마제소바",
+  ]) {
+    assert.equal(analyzeRecommendationIntent(prompt).preferredBrothStyle, null);
+  }
 });

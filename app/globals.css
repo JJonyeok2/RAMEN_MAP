@@ -367,6 +367,17 @@ select:focus-visible {
   margin-top: 10px;
 }
 
+.broth-filter-heading {
+  margin-top: 14px;
+}
+
+.broth-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+}
+
 .type-filter {
   min-height: 32px;
   display: inline-flex;
@@ -430,6 +441,34 @@ select:focus-visible {
 .type-mazesoba > span,
 .type-dot.type-mazesoba {
   background: #be4d35;
+}
+
+.broth-filter {
+  background: #f9faf7;
+}
+
+.broth-filter.active {
+  background: var(--ink);
+}
+
+.broth-filter.broth-chintan > span,
+.broth-style-badge.broth-chintan {
+  background: #4f8792;
+}
+
+.broth-filter.broth-paitan > span,
+.broth-style-badge.broth-paitan {
+  background: #a87c2e;
+}
+
+.broth-filter.broth-dry > span,
+.broth-style-badge.broth-dry {
+  background: #b94d36;
+}
+
+.broth-filter.broth-dipping > span,
+.broth-style-badge.broth-dipping {
+  background: #655047;
 }
 
 .results-heading {
@@ -619,6 +658,15 @@ select:focus-visible {
   font-size: 8px;
   font-style: normal;
   font-weight: 800;
+  line-height: 1.2;
+}
+
+.broth-style-badge {
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 850;
   line-height: 1.2;
 }
 
@@ -1728,16 +1776,32 @@ select:focus-visible {
     display: none;
   }
 
-  .type-filters {
+  .filter-groups {
+    display: flex;
     flex-wrap: nowrap;
     overflow-x: auto;
     margin: 9px -14px 0;
     padding: 0 14px;
+    gap: 7px;
     scrollbar-width: none;
   }
 
-  .type-filters::-webkit-scrollbar {
+  .filter-groups::-webkit-scrollbar {
     display: none;
+  }
+
+  .filter-group,
+  .type-filters,
+  .broth-filters {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 7px;
+  }
+
+  .type-filters,
+  .broth-filters {
+    margin-top: 0;
   }
 
   .type-filter {

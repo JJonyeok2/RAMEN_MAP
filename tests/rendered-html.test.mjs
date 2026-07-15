@@ -39,9 +39,10 @@ test("server-renders the RAMEN MAP product shell", async () => {
 });
 
 test("keeps map integration, filters, and demo data explicit", async () => {
-  const [page, data, layout, packageJson] = await Promise.all([
+  const [page, data, styles, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/ramen-data.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
@@ -50,12 +51,20 @@ test("keeps map integration, filters, and demo data explicit", async () => {
   assert.match(page, /libraries=services,clusterer&autoload=false/);
   assert.match(page, /NEXT_PUBLIC_KAKAO_MAP_KEY/);
   assert.match(page, /RAMEN_TYPE_LABELS/);
+  assert.match(page, /BROTH_STYLE_LABELS/);
+  assert.match(page, /대표 메뉴 국물 스타일 필터/);
+  assert.match(page, /느끼한 건 싫어/);
   assert.match(page, /recommendShops/);
   assert.match(page, /navigator\.geolocation/);
   assert.match(page, /내 위치 기반 주변 추천 사용/);
   assert.match(page, /직선거리/);
   assert.match(data, /export const RAMEN_SHOPS/);
   assert.equal((data.match(/id: "demo-/g) ?? []).length, 24);
+  assert.equal((data.match(/brothStyle: "/g) ?? []).length, 24);
+  assert.match(data, /chintan: "청탕"/);
+  assert.match(data, /paitan: "백탕"/);
+  assert.match(styles, /broth-style-badge\.broth-chintan/);
+  assert.match(styles, /broth-style-badge\.broth-paitan/);
   assert.match(data, /실제 매장 아님/);
   assert.match(data, /카라이 돈코츠라멘/);
   assert.match(layout, /og\.png/);
