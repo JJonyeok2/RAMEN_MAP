@@ -1,2 +1,53 @@
-# JJonyeoks_RMAP
-종혁의 라멘 지도
+# RAMEN MAP
+
+전국 라멘을 지역과 메뉴로 탐색하고, 취향 추천봇에게 오늘의 한 그릇을 추천받는 지도 웹앱입니다.
+
+## 주요 기능
+
+- 카카오맵 JavaScript SDK 기반 전국 지도와 마커 클러스터
+- 가게명·대표 메뉴·태그 통합 검색
+- 쇼유, 시오, 미소, 돈코츠, 츠케멘, 마제소바 복수 필터
+- 전국 17개 시·도 지역 필터
+- 국물 농도, 매운맛, 메뉴 유형, 식단 제약을 반영하는 규칙 기반 추천봇
+- 데스크톱 지도/목록 분할 화면과 모바일 바텀시트
+- 카카오맵 키가 없을 때도 기능을 둘러볼 수 있는 데모 지도
+
+## 로컬 실행
+
+Node.js 22.13 이상이 필요합니다.
+
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+브라우저에서 `http://localhost:3000`을 엽니다.
+
+## 카카오맵 연결
+
+1. [카카오디벨로퍼스](https://developers.kakao.com/)에서 앱을 만듭니다.
+2. `카카오맵 > 사용 설정`을 켭니다.
+3. `플랫폼 키 > JavaScript 키`의 JavaScript SDK 도메인에 로컬 및 배포 도메인을 등록합니다.
+4. JavaScript 키를 `.env.local`에 넣습니다.
+
+```dotenv
+NEXT_PUBLIC_KAKAO_MAP_KEY=YOUR_JAVASCRIPT_KEY
+```
+
+동적 로더는 `services,clusterer` 라이브러리와 `autoload=false`를 사용합니다. JavaScript 키는 REST API 키와 다릅니다.
+
+## 데이터 안내
+
+현재 포함된 24개 매장명, 주소, 메뉴, 가격, 평점, 영업시간은 UI와 추천 로직을 검증하기 위한 **창작 데모 데이터**이며 실제 매장 정보가 아닙니다. 카카오맵은 지도 표시와 위치 확인에 사용하고, 카카오가 제공하지 않는 세부 메뉴 분류는 프로젝트 데이터에서 관리합니다.
+
+실서비스로 전환할 때는 `app/ramen-data.ts`를 검증된 자체 데이터나 백엔드 API로 교체하세요.
+
+## 명령어
+
+```bash
+npm run dev    # 개발 서버
+npm run build  # 배포 빌드
+npm run test   # 렌더링 테스트
+npm run lint   # 정적 검사
+```
