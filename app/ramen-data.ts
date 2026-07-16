@@ -69,6 +69,9 @@ export interface RamenShop {
   closed: string;
   vegetarian: boolean;
   containsPork: boolean;
+  dataStatus?: "demo" | "verified";
+  sourceUrl?: string;
+  verifiedAt?: string;
 }
 
 export const RAMEN_SHOPS: RamenShop[] = [

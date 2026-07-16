@@ -195,6 +195,29 @@ select:focus-visible {
   font-size: 16px;
 }
 
+.header-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.verify-link {
+  padding: 10px 12px;
+  border: 1px solid #d8d0c2;
+  border-radius: 10px;
+  color: #575a52;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.verify-link:hover {
+  border-color: var(--red);
+  color: var(--red-deep);
+}
+
 .workspace {
   height: calc(100dvh - 76px);
   min-height: 604px;
@@ -582,6 +605,10 @@ select:focus-visible {
   font-size: 8px;
   font-weight: 900;
   letter-spacing: 0.1em;
+}
+
+.demo-kicker.verified-kicker {
+  color: #4c7542;
 }
 
 .rating {
@@ -1215,6 +1242,14 @@ select:focus-visible {
   line-height: 1.5;
 }
 
+.verified-source-link {
+  display: inline-block;
+  margin-top: 7px;
+  color: #4f7047;
+  font-size: 9px;
+  font-weight: 850;
+}
+
 .shop-actions {
   display: flex;
   align-items: center;
@@ -1706,6 +1741,11 @@ select:focus-visible {
 
   .recommend-header span {
     font-size: 18px;
+  }
+
+  .verify-link {
+    padding: 8px 9px;
+    font-size: 9px;
   }
 
   .workspace {

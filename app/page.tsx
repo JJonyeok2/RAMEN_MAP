@@ -231,8 +231,12 @@ function RamenCard({
       data-testid={`shop-${shop.id}`}
     >
       <span className="ramen-card-topline">
-        <span className="demo-kicker">DEMO</span>
-        <span className="rating">★ {shop.rating.toFixed(1)}</span>
+        <span className={`demo-kicker${shop.dataStatus === "verified" ? " verified-kicker" : ""}`}>
+          {shop.dataStatus === "verified" ? "VERIFIED" : "DEMO"}
+        </span>
+        <span className="rating">
+          {shop.dataStatus === "verified" ? "사용자 검증" : `★ ${shop.rating.toFixed(1)}`}
+        </span>
       </span>
       <span className="ramen-card-title">{shop.name}</span>
       <span className="ramen-card-menu">
@@ -265,6 +269,7 @@ function RamenCard({
 }
 
 export default function Home() {
+  const [verifiedShops, setVerifiedShops] = useState<RamenShop[]>([]);
   const [search, setSearch] = useState("");
   const [region, setRegion] = useState<(typeof ALL_REGIONS)[number]>("전국");
   const [selectedTypes, setSelectedTypes] = useState<RamenType[]>([]);
@@ -290,10 +295,27 @@ export default function Home() {
   const locationRequestRef = useRef<Promise<Coordinates | null> | null>(null);
   const pendingChatRef = useRef(false);
   const messageIdRef = useRef(2);
+  const shops = useMemo(() => [...verifiedShops, ...RAMEN_SHOPS], [verifiedShops]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/shops", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("verified shops unavailable");
+        return response.json() as Promise<{ shops?: RamenShop[] }>;
+      })
+      .then((result) => {
+        if (!cancelled) setVerifiedShops(result.shops ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setVerifiedShops([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const filteredShops = useMemo(() => {
     const query = normalized(search);
-    return RAMEN_SHOPS.filter((shop) => {
+    return shops.filter((shop) => {
       const haystack = normalized(
         [
           shop.name,
@@ -315,11 +337,11 @@ export default function Home() {
         selectedBrothStyles.includes(shop.brothStyle);
       return matchesQuery && matchesRegion && matchesType && matchesBrothStyle;
     });
-  }, [region, search, selectedBrothStyles, selectedTypes]);
+  }, [region, search, selectedBrothStyles, selectedTypes, shops]);
 
   const selectedShop = useMemo(
-    () => RAMEN_SHOPS.find((shop) => shop.id === selectedId) ?? null,
-    [selectedId],
+    () => shops.find((shop) => shop.id === selectedId) ?? null,
+    [selectedId, shops],
   );
 
   const displayedShops = useMemo(() => {
@@ -610,7 +632,7 @@ export default function Home() {
         locationUnavailable = !coordinates;
       }
 
-      const result = recommendShops(cleanPrompt, region, coordinates);
+      const result = recommendShops(cleanPrompt, region, coordinates, shops);
       const botId = messageIdRef.current++;
       setChatMessages((current) => [
         ...current,
@@ -666,12 +688,15 @@ export default function Home() {
         </a>
         <div className="header-center" aria-label="서비스 안내">
           <span className="live-dot" />
-          전국 17개 시·도 · {RAMEN_SHOPS.length}개 데모 스폿
+          검증 {verifiedShops.length}곳 · 데모 {RAMEN_SHOPS.length}곳
         </div>
-        <button className="recommend-header" type="button" onClick={() => setChatOpen(true)}>
-          <span aria-hidden="true">✦</span>
-          취향으로 추천받기
-        </button>
+        <div className="header-actions">
+          <a className="verify-link" href="/verify">실데이터 검증</a>
+          <button className="recommend-header" type="button" onClick={() => setChatOpen(true)}>
+            <span aria-hidden="true">✦</span>
+            취향으로 추천받기
+          </button>
+        </div>
       </header>
 
       <div className="workspace" id="top">
@@ -892,10 +917,10 @@ export default function Home() {
             <article className="selected-shop-panel" aria-live="polite">
               <button className="panel-close" type="button" onClick={() => setSelectedId(null)} aria-label="매장 상세 닫기">×</button>
               <div className="selected-shop-head">
-                <span className="shop-number">#{String(RAMEN_SHOPS.indexOf(selectedShop) + 1).padStart(2, "0")}</span>
+                <span className="shop-number">#{String(shops.indexOf(selectedShop) + 1).padStart(2, "0")}</span>
                 <div>
                   <small>
-                    {selectedShop.region} · {selectedShop.district} · DEMO
+                    {selectedShop.region} · {selectedShop.district} · {selectedShop.dataStatus === "verified" ? "검증 실데이터" : "DEMO"}
                     {selectedDistance !== null
                       ? ` · 직선 ${formatDistance(selectedDistance)}`
                       : ""}
@@ -919,6 +944,11 @@ export default function Home() {
                 </div>
               </div>
               <p className="shop-address">{selectedShop.address}</p>
+              {selectedShop.dataStatus === "verified" && selectedShop.sourceUrl ? (
+                <a className="verified-source-link" href={selectedShop.sourceUrl} target="_blank" rel="noreferrer">
+                  검증 출처 확인 ↗
+                </a>
+              ) : null}
               <div className="shop-actions">
                 <span>{selectedShop.hours} · {selectedShop.closed}</span>
                 <a
@@ -957,7 +987,7 @@ export default function Home() {
               <div className={`chat-message ${message.role}`} key={message.id}>
                 <p>{message.text}</p>
                 {message.recommendations?.map((recommendation) => {
-                  const shop = RAMEN_SHOPS.find((item) => item.id === recommendation.shopId);
+                  const shop = shops.find((item) => item.id === recommendation.shopId);
                   if (!shop) return null;
                   return (
                     <button

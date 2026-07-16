@@ -217,6 +217,7 @@ export function recommendShops(
   prompt: string,
   activeRegion: Region | "전국",
   userLocation: Coordinates | null = null,
+  shops: RamenShop[] = RAMEN_SHOPS,
 ): RecommendationResult {
   const input = normalizeText(prompt);
   const intent = analyzeRecommendationIntent(prompt);
@@ -224,7 +225,7 @@ export function recommendShops(
     intent.mentionedRegion ??
     (intent.nearby && userLocation ? "전국" : activeRegion);
 
-  let candidates = RAMEN_SHOPS.filter(
+  let candidates = shops.filter(
     (shop) => targetRegion === "전국" || shop.region === targetRegion,
   );
 
