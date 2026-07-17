@@ -71,6 +71,56 @@ test("computes opening state in Korea using structured hours", () => {
   assert.equal(openingStatusAt([], new Date("2026-07-21T03:00:00.000Z")), "unknown");
 });
 
+test("returns unknown for ambiguous structured hours", () => {
+  const now = new Date("2026-07-21T03:00:00.000Z");
+  const interval = {
+    weekday: 2,
+    opens_at: "11:00",
+    closes_at: "21:00",
+    break_starts_at: null,
+    break_ends_at: null,
+    is_closed: 0,
+  };
+
+  for (const row of [
+    { ...interval, opens_at: null },
+    { ...interval, closes_at: null },
+    { ...interval, opens_at: "bad" },
+    { ...interval, closes_at: "25:00" },
+    { ...interval, opens_at: "11:00", closes_at: "11:00" },
+    { ...interval, break_starts_at: "15:00" },
+    { ...interval, break_ends_at: "17:00" },
+    { ...interval, break_starts_at: "bad", break_ends_at: "17:00" },
+    { ...interval, break_starts_at: "15:00", break_ends_at: "bad" },
+    { ...interval, is_closed: 2 },
+  ]) {
+    assert.equal(openingStatusAt([row], now), "unknown");
+  }
+  assert.equal(openingStatusAt([interval, { ...interval, is_closed: 1 }], now), "unknown");
+});
+
+test("keeps unambiguous closed and overnight structured hours deterministic", () => {
+  const closed = [{
+    weekday: 2,
+    opens_at: null,
+    closes_at: null,
+    break_starts_at: null,
+    break_ends_at: null,
+    is_closed: 1,
+  }];
+  const overnight = [{
+    weekday: 2,
+    opens_at: "17:00",
+    closes_at: "02:00",
+    break_starts_at: null,
+    break_ends_at: null,
+    is_closed: 0,
+  }];
+
+  assert.equal(openingStatusAt(closed, new Date("2026-07-21T03:00:00.000Z")), "closed");
+  assert.equal(openingStatusAt(overnight, new Date("2026-07-21T16:00:00.000Z")), "open");
+});
+
 const joinedRow = {
   branch_id: "b1",
   slug: "one",
@@ -85,14 +135,14 @@ const joinedRow = {
   public_status: "active",
   verification_status: "verified",
   hours_text: "11:00-21:00",
-  last_verified_at: "2026-01-01T00:00:00.000Z",
+  last_verified_at: "2026-04-01T00:00:00.000Z",
   opening_hours_json: "[]",
   menu_id: "m1",
   menu_name: "시오",
   price: 10000,
   availability_status: "available",
   menu_verification_status: "verified",
-  menu_last_verified_at: "2026-01-01T00:00:00.000Z",
+  menu_last_verified_at: "2026-04-01T00:00:00.000Z",
   ramen_types: '["shio"]',
   broth_style: "chintan",
   body_level: 2,
@@ -101,10 +151,34 @@ const joinedRow = {
   tags: '["담백"]',
 };
 
-test("groups normalized menu rows and excludes rejected menu facts", () => {
+test("groups normalized menu rows and handles stale windows and invalid profiles", () => {
   const branches = mapBranchRows([
     joinedRow,
-    { ...joinedRow, menu_id: "m2", menu_name: "츠케멘", ramen_types: "not-json", menu_verification_status: "candidate" },
+    { ...joinedRow },
+    {
+      ...joinedRow,
+      menu_id: "m2",
+      menu_name: "츠케멘",
+      menu_last_verified_at: "2025-12-01T00:00:00.000Z",
+      ramen_types: '"tsukemen"',
+      broth_style: null,
+      body_level: null,
+      spiciness_level: null,
+      broth_bases: "not-json",
+      tags: "[1]",
+    },
+    { ...joinedRow, menu_id: "m4", menu_name: "후보", menu_verification_status: "candidate" },
+    {
+      ...joinedRow,
+      menu_id: "m5",
+      menu_name: "프로필 없음",
+      ramen_types: undefined,
+      broth_style: undefined,
+      body_level: undefined,
+      spiciness_level: undefined,
+      broth_bases: undefined,
+      tags: undefined,
+    },
     { ...joinedRow, menu_id: "m3", menu_name: "숨김", menu_verification_status: "rejected" },
     { ...joinedRow, branch_id: "rejected", slug: "rejected", verification_status: "rejected" },
   ], new Date("2026-07-17T00:00:00.000Z"));
@@ -112,9 +186,39 @@ test("groups normalized menu rows and excludes rejected menu facts", () => {
   assert.equal(branches.length, 1);
   assert.equal(branches[0].verificationStatus, "stale");
   assert.deepEqual(branches[0].menus.map((menu) => [menu.id, menu.verificationStatus, menu.ramenTypes]), [
-    ["m1", "stale", ["shio"]],
-    ["m2", "candidate", []],
+    ["m1", "verified", ["shio"]],
+    ["m2", "stale", []],
+    ["m4", "candidate", ["shio"]],
+    ["m5", "verified", []],
   ]);
+  assert.deepEqual(branches[0].menus[1], {
+    id: "m2",
+    name: "츠케멘",
+    price: 10000,
+    ramenTypes: [],
+    brothStyle: null,
+    bodyLevel: null,
+    spicinessLevel: null,
+    brothBases: [],
+    tags: [],
+    availabilityStatus: "available",
+    verificationStatus: "stale",
+    lastVerifiedAt: "2025-12-01T00:00:00.000Z",
+  });
+  assert.deepEqual(branches[0].menus[3], {
+    id: "m5",
+    name: "프로필 없음",
+    price: 10000,
+    ramenTypes: [],
+    brothStyle: null,
+    bodyLevel: null,
+    spicinessLevel: null,
+    brothBases: [],
+    tags: [],
+    availabilityStatus: "available",
+    verificationStatus: "verified",
+    lastVerifiedAt: "2026-04-01T00:00:00.000Z",
+  });
 });
 
 test("uses normalized public D1 queries and never writes nearby origins", async () => {
@@ -130,8 +234,35 @@ test("uses normalized public D1 queries and never writes nearby origins", async 
         },
         async all<T>() {
           if (sql.includes("FROM areas")) return { results: [] as T[] };
-          if (sql.includes("FROM source_evidence")) return { results: [] as T[] };
-          return { results: [joinedRow] as T[] };
+          if (sql.includes("FROM source_evidence")) {
+            assert.deepEqual(statement.values, ["b1"]);
+            return { results: [
+              { id: "e2", source_name: "새 출처", source_url: "https://example.com/new", checked_at: "2026-07-16T00:00:00.000Z", note: "새" },
+              { id: "e1", source_name: "기존 출처", source_url: "https://example.com/old", checked_at: "2026-07-01T00:00:00.000Z", note: "기존" },
+            ] as T[] };
+          }
+          if (sql.includes("WHERE b.slug = ?")) {
+            assert.deepEqual(statement.values, ["one"]);
+            return { results: [joinedRow] as T[] };
+          }
+          if (sql.includes("b.lat BETWEEN ? AND ?")) {
+            const [latLow, latHigh, lngLow, lngHigh] = statement.values;
+            assert.equal(typeof latLow, "number");
+            assert.equal(typeof latHigh, "number");
+            assert.equal(typeof lngLow, "number");
+            assert.equal(typeof lngHigh, "number");
+            assert.deepEqual(statement.values, [
+              37.39 - 3 / 110.574,
+              37.39 + 3 / 110.574,
+              126.96 - 3 / (111.320 * Math.cos(37.39 * Math.PI / 180)),
+              126.96 + 3 / (111.320 * Math.cos(37.39 * Math.PI / 180)),
+            ]);
+            return { results: [
+              joinedRow,
+              { ...joinedRow, branch_id: "b-out", slug: "outside-circle", lat: 37.41, lng: 126.99, menu_id: "m-out" },
+            ] as T[] };
+          }
+          throw new Error(`Unexpected public repository query: ${sql}`);
         },
         async first<T>() {
           return null as T | null;
@@ -145,9 +276,11 @@ test("uses normalized public D1 queries and never writes nearby origins", async 
 
   const repository = createD1ShopRepository(database, new Date("2026-07-17T00:00:00.000Z"));
   const shops = await repository.listPublicBranches({ lat: 37.39, lng: 126.96 }, 3);
-  await repository.getPublicShopBySlug("one");
+  const detail = await repository.getPublicShopBySlug("one");
 
   assert.equal(shops.length, 1);
+  assert.deepEqual(shops.map((shop) => shop.id), ["b1"]);
+  assert.deepEqual(detail?.evidence.map((item) => item.id), ["e2", "e1"]);
   const nearby = statements[0];
   assert.match(nearby.sql, /b\.public_status = 'active'/);
   assert.match(nearby.sql, /b\.verification_status IN \('verified', 'candidate', 'stale'\)/);
@@ -155,7 +288,12 @@ test("uses normalized public D1 queries and never writes nearby origins", async 
   assert.match(nearby.sql, /b\.lat IS NOT NULL AND b\.lng IS NOT NULL/);
   assert.match(nearby.sql, /b\.lat BETWEEN \? AND \?/);
   assert.match(nearby.sql, /b\.lng BETWEEN \? AND \?/);
-  assert.deepEqual(nearby.values.length, 4);
+  assert.equal(nearby.values.length, 4);
+  const [latLow, latHigh, lngLow, lngHigh] = nearby.values as number[];
+  assert.ok(Math.abs(latLow - (37.39 - 3 / 110.574)) < 1e-12);
+  assert.ok(Math.abs(latHigh - (37.39 + 3 / 110.574)) < 1e-12);
+  assert.ok(Math.abs(lngLow - (126.96 - 3 / (111.320 * Math.cos(37.39 * Math.PI / 180)))) < 1e-12);
+  assert.ok(Math.abs(lngHigh - (126.96 + 3 / (111.320 * Math.cos(37.39 * Math.PI / 180)))) < 1e-12);
   const evidence = statements.find((statement) => statement.sql.includes("FROM source_evidence"));
   assert.ok(evidence);
   assert.match(evidence.sql, /ORDER BY checked_at DESC/);

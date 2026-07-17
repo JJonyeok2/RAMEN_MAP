@@ -36,6 +36,47 @@ function containsTime(target: number, start: number, end: number): boolean {
   return target >= start && target < end;
 }
 
+type Interval = {
+  row: OpeningStatusHours;
+  opensAt: number;
+  closesAt: number;
+  breakStartsAt: number | null;
+  breakEndsAt: number | null;
+};
+
+type DaySchedule = { closed: boolean; intervals: Interval[] } | null;
+
+function intervalFor(row: OpeningStatusHours): Interval | "closed" | null {
+  if (row.is_closed === 1) return "closed";
+  if (row.is_closed !== 0) return null;
+
+  const opensAt = minutesSinceMidnight(row.opens_at);
+  const closesAt = minutesSinceMidnight(row.closes_at);
+  if (opensAt === null || closesAt === null || opensAt === closesAt) return null;
+
+  const hasBreakStart = row.break_starts_at !== null;
+  const hasBreakEnd = row.break_ends_at !== null;
+  if (hasBreakStart !== hasBreakEnd) return null;
+  if (!hasBreakStart) return { row, opensAt, closesAt, breakStartsAt: null, breakEndsAt: null };
+
+  const breakStartsAt = minutesSinceMidnight(row.break_starts_at);
+  const breakEndsAt = minutesSinceMidnight(row.break_ends_at);
+  if (breakStartsAt === null || breakEndsAt === null) return null;
+  return { row, opensAt, closesAt, breakStartsAt, breakEndsAt };
+}
+
+function daySchedule(rows: readonly OpeningStatusHours[]): DaySchedule {
+  let closed = false;
+  const intervals: Interval[] = [];
+  for (const row of rows) {
+    const parsed = intervalFor(row);
+    if (parsed === null) return null;
+    if (parsed === "closed") closed = true;
+    else intervals.push(parsed);
+  }
+  return closed && intervals.length > 0 ? null : { closed, intervals };
+}
+
 export function openingStatusAt(
   rows: readonly OpeningStatusHours[],
   now: Date,
@@ -44,25 +85,27 @@ export function openingStatusAt(
   if (rows.length === 0) return "unknown";
 
   const local = localTime(now, timeZone);
-  if (rows.some((row) => row.weekday === local.weekday && row.is_closed === 1)) return "closed";
+  const today = daySchedule(rows.filter((row) => row.weekday === local.weekday));
+  const yesterday = daySchedule(rows.filter((row) => row.weekday === (local.weekday + 6) % 7));
+  if (!today || !yesterday) return "unknown";
+  if (today.closed) return "closed";
 
   const target = local.weekday * 1_440 + local.minute;
-  for (const row of rows) {
-    if (row.is_closed === 1) continue;
-    const opensAt = minutesSinceMidnight(row.opens_at);
-    const closesAt = minutesSinceMidnight(row.closes_at);
-    if (opensAt === null || closesAt === null) continue;
+  const intervals = [
+    ...today.intervals,
+    ...yesterday.intervals.filter((interval) => interval.closesAt < interval.opensAt),
+  ];
+  for (const interval of intervals) {
+    const { row, opensAt, closesAt, breakStartsAt, breakEndsAt } = interval;
 
     const start = row.weekday * 1_440 + opensAt;
-    const end = row.weekday * 1_440 + closesAt + (closesAt <= opensAt ? 1_440 : 0);
+    const end = row.weekday * 1_440 + closesAt + (closesAt < opensAt ? 1_440 : 0);
     for (const weekOffset of [-10_080, 0, 10_080]) {
       if (!containsTime(target, start + weekOffset, end + weekOffset)) continue;
 
-      const breakStartsAt = minutesSinceMidnight(row.break_starts_at);
-      const breakEndsAt = minutesSinceMidnight(row.break_ends_at);
       if (breakStartsAt === null || breakEndsAt === null) return "open";
       const breakStart = row.weekday * 1_440 + breakStartsAt + weekOffset;
-      const breakEnd = row.weekday * 1_440 + breakEndsAt + (breakEndsAt <= breakStartsAt ? 1_440 : 0) + weekOffset;
+      const breakEnd = row.weekday * 1_440 + breakEndsAt + (breakEndsAt < breakStartsAt ? 1_440 : 0) + weekOffset;
       return containsTime(target, breakStart, breakEnd) ? "closed" : "open";
     }
   }
