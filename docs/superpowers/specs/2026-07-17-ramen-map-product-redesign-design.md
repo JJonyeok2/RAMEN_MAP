@@ -104,14 +104,14 @@ V1은 경로 API가 없으므로 이동시간을 추정하지 않는다. 모든 
 
 브랜드 또는 매장의 정체성이다.
 
-- `id`, `slug`, `name`, `normalized_name`
+- `id`, `name`, `normalized_name`
 - `created_at`, `updated_at`
 
 ### `branches`
 
 사용자가 실제로 방문하는 지점이다.
 
-- `id`, `shop_id`, `branch_name`
+- `id`, `shop_id`, `slug`, `branch_name`
 - `region`, `district`, `address`, `lat`, `lng`
 - `phone`, `public_status`, `verification_status`
 - `last_verified_at`, `created_at`, `updated_at`
@@ -155,6 +155,10 @@ V1은 경로 API가 없으므로 이동시간을 추정하지 않는다. 모든 
 ### `areas`
 
 지도·외부 지오코더 없이 수동 위치를 선택하기 위한 지역과 역 중심 좌표를 저장한다. V1은 안양, 망원, 홍대, 합정과 해당 생활권의 주요 역 중심점을 포함한다.
+
+### `product_events`
+
+60초 결정 목표를 측정하기 위해 빠른 찾기 시작, 추천 노출, 매장 선택, 길찾기 클릭만 저장한다. 무작위 세션 ID는 서버에서 해시하고, 경과 시간·지역 코드·선택 반경·결과 검증 상태만 기록한다. 원본 좌표, 자연어 입력, IP 기반 위치와 사용자 에이전트는 저장하지 않는다.
 
 ## 7. 데이터 신뢰 정책
 
