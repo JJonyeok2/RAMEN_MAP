@@ -4,18 +4,21 @@ import { createD1ShopRepository } from "../../../../db/repositories/d1-shop-repo
 import { parseRecommendationRequest } from "../../../../features/recommendation/request.ts";
 import { recommend } from "../../../../features/recommendation/recommend.ts";
 import { createShopService } from "../../../../features/shops/shop-service.ts";
+import { JsonBodyError, readBoundedJson } from "../json-body.ts";
 
 export const dynamic = "force-dynamic";
 
 type LoadDatabase = () => Promise<D1DatabaseLike>;
+const bodyLimitBytes = 8_192;
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
 export function createRecommendationsHandler(loadDatabase: LoadDatabase = getD1) {
   return async function POST(request: Request) {
     let parsed: ReturnType<typeof parseRecommendationRequest>;
     try {
-      parsed = parseRecommendationRequest(await request.json());
-    } catch {
+      parsed = parseRecommendationRequest(await readBoundedJson(request, bodyLimitBytes));
+    } catch (error) {
+      if (error instanceof JsonBodyError) return json({ error: error.message }, error.status);
       return json({ error: "요청 형식을 확인해 주세요." }, 400);
     }
 

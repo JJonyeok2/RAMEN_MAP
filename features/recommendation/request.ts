@@ -22,7 +22,11 @@ function onlyKeys(value: UnknownRecord, allowed: readonly string[], message: str
 }
 
 function enumArray<T extends string>(value: unknown, allowed: readonly T[]): T[] {
-  if (!Array.isArray(value) || !value.every((item): item is T => typeof item === "string" && allowed.includes(item as T))) {
+  if (
+    !Array.isArray(value)
+    || value.length > allowed.length
+    || !value.every((item): item is T => typeof item === "string" && allowed.includes(item as T))
+  ) {
     throw new Error("추천 선택 항목을 확인해 주세요.");
   }
   return [...new Set(value)];

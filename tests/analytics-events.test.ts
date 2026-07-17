@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hashSessionId, parseProductEvent } from "../features/analytics/events.ts";
+import { parseProductEvent } from "../features/analytics/events.ts";
+import { hashSessionId } from "../db/repositories/d1-analytics-repository.ts";
 
 const validEvent = {
   sessionId: "b8a3f064-9462-4a3b-a7f4-c5f9e0e00a11",
   eventType: "directions_clicked",
   elapsedMs: 42_000,
-  areaId: "anyang",
+  areaId: "area:anyang",
   radiusKm: 3,
   verificationStatus: "verified",
 };
@@ -36,6 +37,21 @@ test("accepts only the approved coarse optional dimensions", () => {
   assert.throws(() => parseProductEvent({ ...validEvent, elapsedMs: 1.5 }), /시간/);
   assert.throws(() => parseProductEvent({ ...validEvent, radiusKm: 5 }), /반경/);
   assert.throws(() => parseProductEvent({ ...validEvent, verificationStatus: "rejected" }), /검증/);
+});
+
+test("accepts only canonical bounded area identifiers", () => {
+  assert.equal(parseProductEvent(validEvent).areaId, "area:anyang");
+  for (const areaId of [
+    "private note 37.39,126.96",
+    "area:",
+    "area:Anyang",
+    "area:anyang station",
+    "area:anyang--station",
+    "area:anyang,37.39",
+    `area:${"a".repeat(65)}`,
+  ]) {
+    assert.throws(() => parseProductEvent({ ...validEvent, areaId }), /지역/);
+  }
 });
 
 test("requires a UUID session and hashes it deterministically with SHA-256", async () => {

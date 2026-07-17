@@ -51,3 +51,13 @@ test("accepts only runtime domain values in selection arrays", () => {
   assert.throws(() => parseRecommendationRequest({ ...validRequest, selections: { bodyTarget: 0 } }), /선택/);
   assert.throws(() => parseRecommendationRequest({ ...validRequest, selections: { extra: [] } }), /선택/);
 });
+
+test("rejects selection arrays larger than their approved vocabulary before deduplication", () => {
+  assert.throws(
+    () => parseRecommendationRequest({
+      ...validRequest,
+      selections: { ramenTypes: ["shio", "shio", "shio", "shio", "shio", "shio", "shio"] },
+    }),
+    /선택/,
+  );
+});

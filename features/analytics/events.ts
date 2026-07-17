@@ -3,6 +3,7 @@ import type { ProductEventRow } from "../../db/schema.ts";
 const eventTypes = ["quick_started", "recommendation_shown", "shop_selected", "directions_clicked"] as const;
 const radii = [3, 10, 30] as const;
 const verificationStatuses = ["verified", "candidate", "stale"] as const;
+const canonicalAreaId = /^area:[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export interface ProductEventInput {
   sessionId: string;
@@ -35,13 +36,10 @@ export function parseProductEvent(value: unknown): ProductEventInput {
     sessionId: input.sessionId,
     eventType: input.eventType as ProductEventInput["eventType"],
     elapsedMs: optional(input.elapsedMs, (candidate): candidate is number => Number.isSafeInteger(candidate) && (candidate as number) >= 0, "이벤트 시간을 확인해 주세요."),
-    areaId: optional(input.areaId, (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0 && candidate.length <= 100, "이벤트 지역을 확인해 주세요."),
+    areaId: optional(input.areaId, (candidate): candidate is string => (
+      typeof candidate === "string" && candidate.length <= 69 && canonicalAreaId.test(candidate)
+    ), "이벤트 지역을 확인해 주세요."),
     radiusKm: optional(input.radiusKm, (candidate): candidate is 3 | 10 | 30 => typeof candidate === "number" && radii.includes(candidate as 3 | 10 | 30), "이벤트 반경을 확인해 주세요."),
     verificationStatus: optional(input.verificationStatus, (candidate): candidate is "verified" | "candidate" | "stale" => typeof candidate === "string" && verificationStatuses.includes(candidate as "verified" | "candidate" | "stale"), "이벤트 검증 상태를 확인해 주세요."),
   };
-}
-
-export async function hashSessionId(sessionId: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sessionId));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
