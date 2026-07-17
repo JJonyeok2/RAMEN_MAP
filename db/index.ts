@@ -1,15 +1,8 @@
 import type { VerificationCandidate } from "../app/verification-types";
 import type { RamenShop } from "../app/ramen-data";
+import { getD1 } from "./d1.ts";
 
-type D1Result<T> = { results?: T[] };
-type D1Statement = {
-  bind: (...values: unknown[]) => D1Statement;
-  all: <T>() => Promise<D1Result<T>>;
-  run: () => Promise<unknown>;
-};
-type D1DatabaseLike = {
-  prepare: (sql: string) => D1Statement;
-};
+export type { D1DatabaseLike, D1Result, D1Statement } from "./d1.ts";
 
 type CandidateRow = {
   id: string;
@@ -42,13 +35,6 @@ type CandidateRow = {
   created_at: string;
   updated_at: string;
 };
-
-async function database() {
-  const { env } = await import("cloudflare:workers");
-  const db = (env as unknown as { DB?: D1DatabaseLike }).DB;
-  if (!db) throw new Error("D1 binding DB is not configured.");
-  return db;
-}
 
 function parseList<T>(value: string): T[] {
   try {
@@ -94,7 +80,7 @@ function toCandidate(row: CandidateRow): VerificationCandidate {
 }
 
 export async function listVerificationCandidates() {
-  const db = await database();
+  const db = await getD1();
   const result = await db
     .prepare("SELECT * FROM shop_candidates ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'hold' THEN 1 WHEN 'verified' THEN 2 ELSE 3 END, area, name")
     .all<CandidateRow>();
@@ -104,7 +90,7 @@ export async function listVerificationCandidates() {
 export async function saveVerificationCandidate(candidate: VerificationCandidate) {
   const verifiedAt = candidate.status === "verified" ? new Date().toISOString() : null;
   const verifiedBy = candidate.status === "verified" ? candidate.verifiedBy || "RAMEN MAP 운영자" : "";
-  const db = await database();
+  const db = await getD1();
   await db
     .prepare(`
       INSERT INTO shop_candidates (
@@ -160,7 +146,7 @@ export async function saveVerificationCandidate(candidate: VerificationCandidate
 }
 
 export async function listVerifiedShops(): Promise<RamenShop[]> {
-  const db = await database();
+  const db = await getD1();
   const result = await db
     .prepare("SELECT * FROM shop_candidates WHERE status = 'verified' AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY area, name")
     .all<CandidateRow>();
