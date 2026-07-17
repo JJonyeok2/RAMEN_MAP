@@ -1,4 +1,4 @@
-import type { Area, BranchSummary, BrothBase, BrothStyle, RamenType, RecommendationMode } from "./ramen.ts";
+import type { Area, BrothBase, BrothStyle, PublicBranchSummary, RamenType, RecommendationMode } from "./ramen.ts";
 
 export interface Coordinates { lat: number; lng: number }
 export interface TasteIntent {
@@ -20,7 +20,7 @@ export interface RecommendationRequest {
   intent: TasteIntent;
 }
 export interface RecommendationItem {
-  branch: BranchSummary;
+  branch: PublicBranchSummary;
   menuId: string;
   score: number;
   distanceKm: number;

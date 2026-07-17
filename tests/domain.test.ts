@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { BranchSummary, MenuItem, PublicBranchSummary, ShopDetail } from "../domain/ramen.ts";
+import type { RecommendationItem } from "../domain/recommendation.ts";
 import type { ShopRepository } from "../domain/shop-repository.ts";
 import {
   effectiveVerificationStatus,
@@ -29,6 +30,12 @@ function validatesPublicTypeContracts(
     publicStatus: "active";
     verificationStatus: "rejected";
   },
+  rejectedRecommendationItem: Omit<RecommendationItem, "branch"> & {
+    branch: BranchSummary & {
+      publicStatus: "active";
+      verificationStatus: "rejected";
+    };
+  },
 ): void {
   if (isPublicBranch(fullBranch)) {
     acceptsPublicBranch(fullBranch);
@@ -43,10 +50,13 @@ function validatesPublicTypeContracts(
   const rejectedMenuPublicBranches: PublicBranches = [rejectedMenuBranch];
   // @ts-expect-error Public repository details exclude rejected branches.
   const rejectedPublicShop: PublicShop = rejectedShop;
+  // @ts-expect-error Public recommendation items exclude rejected branches.
+  const rejectedRecommendation: RecommendationItem = rejectedRecommendationItem;
 
   void rejectedPublicBranches;
   void rejectedMenuPublicBranches;
   void rejectedPublicShop;
+  void rejectedRecommendation;
 }
 
 void validatesPublicTypeContracts;
