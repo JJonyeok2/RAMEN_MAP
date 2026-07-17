@@ -29,5 +29,6 @@ test("connects verification status to the public map and recommendation data", a
   assert.match(home, /실데이터 검증/);
   assert.match(verificationPage, /검증 완료/);
   assert.match(verificationPage, /검증 완료.*지도와 챗봇에 반영됩니다/);
-  assert.match(shopApi, /listVerifiedShops/);
+  assert.match(shopApi, /createD1ShopRepository/);
+  assert.doesNotMatch(shopApi, /listVerifiedShops|RAMEN_SHOPS/);
 });
