@@ -357,7 +357,7 @@ export default function NearbyPage() {
             {!areasLoading && !areaError && areas.length === 0 ? (
               <div className="empty-message">
                 <p>선택할 수 있는 지역이 아직 없어요. 잠시 뒤 다시 시도해 주세요.</p>
-                <button type="button" onClick={() => void loadAreas(state.message)}>지역 다시 불러오기</button>
+                <button className="secondary-button" type="button" onClick={() => void loadAreas(state.message)}>지역 다시 불러오기</button>
               </div>
             ) : null}
           </div>
