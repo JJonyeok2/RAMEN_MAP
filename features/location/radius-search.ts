@@ -1,9 +1,9 @@
-import type { Coordinates } from "../../domain/recommendation";
+import type { Coordinates } from "../../domain/recommendation.ts";
 import {
   LocationRequestError,
   requestCurrentCoordinates,
   type GeolocationLike,
-} from "../../app/geolocation";
+} from "../../app/geolocation.ts";
 
 export const radiusOptions = [3, 10, 30] as const;
 

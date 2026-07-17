@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
+async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
+    new Request(`http://localhost${pathname}`, {
       headers: { accept: "text/html" },
     }),
     {
@@ -36,6 +36,19 @@ test("server-renders the RAMEN MAP product shell", async () => {
   assert.match(html, /라멘 탐방/);
   assert.doesNotMatch(html, /전국 17개 시·도|DEMO DATA|창작 데모/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
+});
+
+test("server-renders the accessible nearby quick-start shell", async () => {
+  const response = await render("/nearby");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<h1[^>]*>배고파요 · 빨리 찾기<\/h1>/);
+  assert.match(html, /<h2>현재 위치에서 시작<\/h2>/);
+  assert.match(html, /<button[^>]*>현재 위치로 3곳 찾기<\/button>/);
+  assert.match(html, /직선거리/);
+  assert.doesNotMatch(html, /dapi\.kakao\.com|DEMO DATA|창작 데모/);
 });
 
 test("keeps the quick flow list-first and explicit about its choices", async () => {

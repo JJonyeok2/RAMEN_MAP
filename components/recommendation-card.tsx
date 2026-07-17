@@ -57,13 +57,18 @@ export function RecommendationCard({ item, onDetail, onDirections }: Recommendat
       <p className="verification-date">{formatVerifiedDate(branch.lastVerifiedAt)}</p>
 
       <div className="recommendation-actions">
-        <Link href={`/shops/${branch.slug}`} onClick={() => onDetail(item)}>
+        <Link
+          href={`/shops/${branch.slug}`}
+          aria-label={`${branch.shopName}${branch.branchName ? ` ${branch.branchName}` : ""} 상세 보기`}
+          onClick={() => onDetail(item)}
+        >
           상세 보기
         </Link>
         <a
           href={`https://map.naver.com/p/search/${encodeURIComponent(mapQuery)}`}
           target="_blank"
           rel="noreferrer"
+          aria-label={`${branch.shopName}${branch.branchName ? ` ${branch.branchName}` : ""} 외부 지도에서 찾기`}
           onClick={() => onDirections(item)}
         >
           외부 지도에서 찾기 ↗

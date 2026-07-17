@@ -18,9 +18,10 @@ test("packages a D1 migration with the eight requested verification candidates",
 });
 
 test("connects verification status to the public nearby flow and recommendation data", async () => {
-  const [home, nearby, verificationPage, recommendationApi] = await Promise.all([
+  const [home, nearby, clientEvents, verificationPage, recommendationApi] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/nearby/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/analytics/client-events.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/verify/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v1/recommendations/route.ts", import.meta.url), "utf8"),
   ]);
@@ -28,7 +29,8 @@ test("connects verification status to the public nearby flow and recommendation 
   assert.doesNotMatch(home, /fetch\(/);
   assert.match(nearby, /fetch\("\/api\/v1\/recommendations"/);
   assert.match(nearby, /fetch\("\/api\/v1\/areas"/);
-  assert.match(nearby, /fetch\("\/api\/v1\/events"/);
+  assert.match(nearby, /createProductEventEmitter/);
+  assert.match(clientEvents, /fetch\("\/api\/v1\/events"/);
   assert.match(nearby, /verificationStatus: item\.branch\.verificationStatus/);
   assert.match(verificationPage, /검증 완료/);
   assert.match(verificationPage, /검증 완료.*지도와 챗봇에 반영됩니다/);

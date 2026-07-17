@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { RecommendationCard } from "../../components/recommendation-card";
 import type {
   Coordinates,
@@ -11,7 +11,6 @@ import type {
 import type {
   Area,
   BrothStyle,
-  PublicVerificationStatus,
   RamenType,
   RecommendationMode,
 } from "../../domain/ramen";
@@ -19,13 +18,34 @@ import {
   locationFallbackMessage,
   requestRadiusSearchOrigin,
 } from "../../features/location/radius-search";
+import { createProductEventEmitter, type ProductEventDetails } from "../../features/analytics/client-events";
+import { RequestCoordinator, type CoordinatedRequest } from "../../features/location/request-coordinator";
+import {
+  parseAreasResponse,
+  parsePublicError,
+  parseRecommendationResponse,
+} from "../../features/recommendation/client-response";
+
+type EventType = "quick_started" | "recommendation_shown" | "shop_selected" | "directions_clicked";
+
+interface ResultContext {
+  startedAt: number;
+  selectedAreaId: string | null;
+}
+
+interface SearchContext extends ResultContext {
+  origin: Coordinates;
+  mode: RecommendationMode;
+  selections: PreferenceSelections;
+  text: string;
+}
 
 type NearbyState =
   | { status: "idle" }
   | { status: "locating" }
   | { status: "choosing-area"; message: string }
   | { status: "loading" }
-  | { status: "results"; result: RecommendationResponse }
+  | { status: "results"; result: RecommendationResponse; context: ResultContext }
   | { status: "error"; message: string };
 
 interface PreferenceSelections {
@@ -59,7 +79,6 @@ const quickPreferenceOptions: Array<{ value: QuickPreference; label: string }> =
   { value: "tsukemen", label: "츠케멘" },
 ];
 
-const sessionKey = "ramen-map-session-id";
 const emptySelections: PreferenceSelections = {};
 
 function monotonicNow() {
@@ -81,6 +100,14 @@ function resultCount(result: RecommendationResponse) {
   return result.verified.length + result.candidates.length;
 }
 
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 export default function NearbyPage() {
   const [state, setState] = useState<NearbyState>({ status: "idle" });
   const [areas, setAreas] = useState<Area[]>([]);
@@ -90,85 +117,70 @@ export default function NearbyPage() {
   const [quickPreferences, setQuickPreferences] = useState<QuickPreference[]>([]);
   const [desiredBowl, setDesiredBowl] = useState("");
   const [preferencesOpen, setPreferencesOpen] = useState(false);
-  const originRef = useRef<Coordinates | null>(null);
-  const areaIdRef = useRef<string | null>(null);
-  const quickStartedAtRef = useRef(0);
-  const fallbackSessionIdRef = useRef<string | null>(null);
+  const searchRef = useRef<SearchContext | null>(null);
+  const coordinatorRef = useRef<RequestCoordinator | null>(null);
+  const eventEmitterRef = useRef<ReturnType<typeof createProductEventEmitter> | null>(null);
 
-  const sessionId = () => {
+  const coordinator = () => (coordinatorRef.current ??= new RequestCoordinator());
+
+  useEffect(() => () => coordinatorRef.current?.dispose(), []);
+
+  const emitEvent = (eventType: EventType, details: ProductEventDetails = {}) => {
     try {
-      const stored = window.sessionStorage.getItem(sessionKey);
-      if (stored) return stored;
-      const created = window.crypto.randomUUID();
-      window.sessionStorage.setItem(sessionKey, created);
-      return created;
+      eventEmitterRef.current ??= createProductEventEmitter({
+        storage: window.sessionStorage,
+        crypto: window.crypto,
+        fetch: window.fetch.bind(window),
+      });
+      eventEmitterRef.current(eventType, details);
     } catch {
-      fallbackSessionIdRef.current ??= window.crypto.randomUUID();
-      return fallbackSessionIdRef.current;
+      // Analytics setup is deliberately unable to interrupt the nearby flow.
     }
   };
 
-  const elapsedMs = () => Math.max(0, Math.round(monotonicNow() - quickStartedAtRef.current));
+  const elapsedMs = (startedAt: number) => Math.max(0, Math.round(monotonicNow() - startedAt));
 
-  const emitEvent = (
-    eventType: "quick_started" | "recommendation_shown" | "shop_selected" | "directions_clicked",
-    details: {
-      elapsedMs?: number;
-      areaId?: string;
-      radiusKm?: 3 | 10 | 30;
-      verificationStatus?: PublicVerificationStatus;
-    } = {},
-  ) => {
-    const payload = { sessionId: sessionId(), eventType, ...details };
-    void fetch("/api/v1/events", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      keepalive: true,
-    }).catch(() => undefined);
-  };
-
-  const beginAttempt = () => {
-    quickStartedAtRef.current = monotonicNow();
+  const beginSearch = (context: Omit<SearchContext, "startedAt">) => {
+    const search = { ...context, startedAt: monotonicNow() };
+    const request = coordinator().begin();
     emitEvent("quick_started", {
       elapsedMs: 0,
-      ...(areaIdRef.current ? { areaId: areaIdRef.current } : {}),
+      ...(search.selectedAreaId ? { areaId: search.selectedAreaId } : {}),
     });
+    return { request, search };
   };
 
-  const fetchRecommendation = async (
-    origin: Coordinates,
-    selectedMode: RecommendationMode,
-    selections: PreferenceSelections,
-    text: string,
-    selectedAreaId: string | null,
-  ) => {
-    originRef.current = origin;
-    areaIdRef.current = selectedAreaId;
+  const fetchRecommendation = async (search: SearchContext, request: CoordinatedRequest) => {
+    if (!coordinator().isCurrent(request.token)) return;
+    searchRef.current = search;
     setState({ status: "loading" });
     try {
       const response = await fetch("/api/v1/recommendations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: request.signal,
         body: JSON.stringify({
-          origin,
-          mode: selectedMode,
+          origin: search.origin,
+          mode: search.mode,
           quick: true,
-          selections,
-          text,
+          selections: search.selections,
+          text: search.text,
         }),
       });
-      const body = await response.json() as { result?: RecommendationResponse; error?: string };
-      if (!response.ok || !body.result) {
-        throw new Error(body.error || "추천을 불러오지 못했어요.");
-      }
-      setState({ status: "results", result: body.result });
+      const body = await readJson(response);
+      if (!coordinator().isCurrent(request.token)) return;
+      if (!response.ok) throw new Error(parsePublicError(body, "추천을 불러오지 못했어요."));
+      const result = parseRecommendationResponse(body);
+      if (!coordinator().isCurrent(request.token)) return;
+      const context: ResultContext = { startedAt: search.startedAt, selectedAreaId: search.selectedAreaId };
+      setState({ status: "results", result, context });
       emitEvent("recommendation_shown", {
-        elapsedMs: elapsedMs(),
-        ...(selectedAreaId ? { areaId: selectedAreaId } : {}),
-        radiusKm: body.result.radiusKm,
+        elapsedMs: elapsedMs(context.startedAt),
+        ...(context.selectedAreaId ? { areaId: context.selectedAreaId } : {}),
+        radiusKm: result.radiusKm,
       });
     } catch (error) {
+      if (!coordinator().isCurrent(request.token)) return;
       setState({
         status: "error",
         message: error instanceof Error ? error.message : "추천을 불러오지 못했어요.",
@@ -176,74 +188,80 @@ export default function NearbyPage() {
     }
   };
 
-  const loadAreas = async (message: string) => {
+  const loadAreas = async (message: string, pendingRequest?: CoordinatedRequest) => {
+    const request = pendingRequest ?? coordinator().begin();
+    if (!coordinator().isCurrent(request.token)) return;
     setState({ status: "choosing-area", message });
     setAreasLoading(true);
     setAreaError("");
     try {
-      const response = await fetch("/api/v1/areas", { cache: "no-store" });
-      const body = await response.json() as { areas?: Area[]; error?: string };
-      if (!response.ok) throw new Error(body.error || "지역을 불러오지 못했어요.");
-      setAreas(body.areas ?? []);
+      const response = await fetch("/api/v1/areas", { cache: "no-store", signal: request.signal });
+      const body = await readJson(response);
+      if (!coordinator().isCurrent(request.token)) return;
+      if (!response.ok) throw new Error(parsePublicError(body, "지역을 불러오지 못했어요."));
+      setAreas(parseAreasResponse(body));
     } catch (error) {
+      if (!coordinator().isCurrent(request.token)) return;
       setAreaError(error instanceof Error ? error.message : "지역을 불러오지 못했어요.");
     } finally {
-      setAreasLoading(false);
+      if (coordinator().isCurrent(request.token)) setAreasLoading(false);
     }
   };
 
   const startWithCurrentLocation = async () => {
-    areaIdRef.current = null;
-    quickStartedAtRef.current = monotonicNow();
-    emitEvent("quick_started", { elapsedMs: 0 });
+    const { request, search } = beginSearch({
+      origin: { lat: 0, lng: 0 }, mode: "distance", selections: emptySelections, text: "", selectedAreaId: null,
+    });
     setState({ status: "locating" });
     try {
       const origin = await requestRadiusSearchOrigin(navigator.geolocation);
+      if (!coordinator().isCurrent(request.token)) return;
       setMode("distance");
       setQuickPreferences([]);
       setDesiredBowl("");
-      await fetchRecommendation(origin, "distance", emptySelections, "", null);
+      await fetchRecommendation({ ...search, origin }, request);
     } catch (error) {
-      await loadAreas(locationFallbackMessage(error));
+      if (!coordinator().isCurrent(request.token)) return;
+      await loadAreas(locationFallbackMessage(error), request);
     }
   };
 
   const chooseArea = (area: Area) => {
-    void fetchRecommendation(
-      { lat: area.lat, lng: area.lng },
-      "distance",
-      emptySelections,
-      "",
-      area.id,
-    );
+    const { request, search } = beginSearch({
+      origin: { lat: area.lat, lng: area.lng }, mode: "distance", selections: emptySelections, text: "", selectedAreaId: area.id,
+    });
+    setMode("distance");
+    setQuickPreferences([]);
+    setDesiredBowl("");
+    void fetchRecommendation(search, request);
   };
 
   const retryRecommendation = () => {
-    if (!originRef.current) {
+    if (!searchRef.current) {
       void startWithCurrentLocation();
       return;
     }
-    beginAttempt();
-    void fetchRecommendation(
-      originRef.current,
+    const { request, search } = beginSearch({
+      origin: searchRef.current.origin,
       mode,
-      buildSelections(quickPreferences),
-      desiredBowl,
-      areaIdRef.current,
-    );
+      selections: buildSelections(quickPreferences),
+      text: desiredBowl,
+      selectedAreaId: searchRef.current.selectedAreaId,
+    });
+    void fetchRecommendation(search, request);
   };
 
   const submitPreferences = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!originRef.current) return;
-    beginAttempt();
-    void fetchRecommendation(
-      originRef.current,
+    if (!searchRef.current) return;
+    const { request, search } = beginSearch({
+      origin: searchRef.current.origin,
       mode,
-      buildSelections(quickPreferences),
-      desiredBowl,
-      areaIdRef.current,
-    );
+      selections: buildSelections(quickPreferences),
+      text: desiredBowl,
+      selectedAreaId: searchRef.current.selectedAreaId,
+    });
+    void fetchRecommendation(search, request);
   };
 
   const togglePreference = (preference: QuickPreference) => {
@@ -252,19 +270,19 @@ export default function NearbyPage() {
       : [...current, preference]);
   };
 
-  const resultEventDetails = (item: RecommendationItem) => ({
-    elapsedMs: elapsedMs(),
-    ...(areaIdRef.current ? { areaId: areaIdRef.current } : {}),
-    ...(state.status === "results" ? { radiusKm: state.result.radiusKm } : {}),
+  const resultEventDetails = (item: RecommendationItem, result: RecommendationResponse, context: ResultContext) => ({
+    elapsedMs: elapsedMs(context.startedAt),
+    ...(context.selectedAreaId ? { areaId: context.selectedAreaId } : {}),
+    radiusKm: result.radiusKm,
     verificationStatus: item.branch.verificationStatus,
   });
 
-  const onDetail = (item: RecommendationItem) => {
-    emitEvent("shop_selected", resultEventDetails(item));
+  const onDetail = (item: RecommendationItem, result: RecommendationResponse, context: ResultContext) => {
+    emitEvent("shop_selected", resultEventDetails(item, result, context));
   };
 
-  const onDirections = (item: RecommendationItem) => {
-    emitEvent("directions_clicked", resultEventDetails(item));
+  const onDirections = (item: RecommendationItem, result: RecommendationResponse, context: ResultContext) => {
+    emitEvent("directions_clicked", resultEventDetails(item, result, context));
   };
 
   const showPreferenceForm = preferencesOpen && state.status === "results";
@@ -337,7 +355,10 @@ export default function NearbyPage() {
               </div>
             ) : null}
             {!areasLoading && !areaError && areas.length === 0 ? (
-              <p className="empty-message">선택할 수 있는 지역이 아직 없어요. 잠시 뒤 다시 시도해 주세요.</p>
+              <div className="empty-message">
+                <p>선택할 수 있는 지역이 아직 없어요. 잠시 뒤 다시 시도해 주세요.</p>
+                <button type="button" onClick={() => void loadAreas(state.message)}>지역 다시 불러오기</button>
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -450,8 +471,8 @@ export default function NearbyPage() {
                     <RecommendationCard
                       key={item.branch.id}
                       item={item}
-                      onDetail={onDetail}
-                      onDirections={onDirections}
+                      onDetail={(item) => onDetail(item, state.result, state.context)}
+                      onDirections={(item) => onDirections(item, state.result, state.context)}
                     />
                   ))}
                 </div>
@@ -475,8 +496,8 @@ export default function NearbyPage() {
                     <RecommendationCard
                       key={item.branch.id}
                       item={item}
-                      onDetail={onDetail}
-                      onDirections={onDirections}
+                      onDetail={(item) => onDetail(item, state.result, state.context)}
+                      onDirections={(item) => onDirections(item, state.result, state.context)}
                     />
                   ))}
                 </div>
