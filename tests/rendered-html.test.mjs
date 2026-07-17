@@ -72,6 +72,7 @@ test("keeps the quick flow list-first and explicit about its choices", async () 
   assert.match(nearby, /taste/);
   assert.match(nearby, /balanced/);
   assert.match(nearby, /distance/);
+  assert.match(nearby, /<button className="secondary-button"[\s\S]*?지역 다시 불러오기<\/button>/);
   assert.doesNotMatch(nearby, /dapi\.kakao\.com|ramen-data|recommendShops/);
   assert.match(modeCard, /<h2>\{title\}<\/h2>/);
   assert.match(styles, /mode-card/);

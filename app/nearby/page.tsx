@@ -341,7 +341,7 @@ export default function NearbyPage() {
             {areaError ? (
               <div className="inline-error" role="alert">
                 <p>{areaError}</p>
-                <button type="button" onClick={() => void loadAreas(state.message)}>지역 다시 불러오기</button>
+                <button className="secondary-button" type="button" onClick={() => void loadAreas(state.message)}>지역 다시 불러오기</button>
               </div>
             ) : null}
             {!areasLoading && !areaError && areas.length ? (
