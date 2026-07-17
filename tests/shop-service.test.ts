@@ -121,6 +121,47 @@ test("keeps unambiguous closed and overnight structured hours deterministic", ()
   assert.equal(openingStatusAt(overnight, new Date("2026-07-21T16:00:00.000Z")), "open");
 });
 
+test("opens when an overlapping interval is not on break regardless of row order", () => {
+  const first = {
+    weekday: 2,
+    opens_at: "11:00",
+    closes_at: "21:00",
+    break_starts_at: "15:00",
+    break_ends_at: "17:00",
+    is_closed: 0,
+  };
+  const second = {
+    weekday: 2,
+    opens_at: "16:00",
+    closes_at: "18:00",
+    break_starts_at: null,
+    break_ends_at: null,
+    is_closed: 0,
+  };
+  const now = new Date("2026-07-21T07:30:00.000Z");
+
+  assert.equal(openingStatusAt([first, second], now), "open");
+  assert.equal(openingStatusAt([second, first], now), "open");
+});
+
+test("normalizes and validates overnight breaks inside their opening interval", () => {
+  const opening = {
+    weekday: 2,
+    opens_at: "17:00",
+    closes_at: "02:00",
+    break_starts_at: "00:00",
+    break_ends_at: "00:30",
+    is_closed: 0,
+  };
+  const now = new Date("2026-07-21T15:15:00.000Z");
+
+  assert.equal(openingStatusAt([opening], now), "closed");
+  assert.equal(openingStatusAt([{ ...opening, break_starts_at: "23:30", break_ends_at: "00:30" }], now), "closed");
+  assert.equal(openingStatusAt([{ ...opening, break_starts_at: "00:00", break_ends_at: "00:00" }], now), "unknown");
+  assert.equal(openingStatusAt([{ ...opening, break_starts_at: "02:00", break_ends_at: "02:30" }], now), "unknown");
+  assert.equal(openingStatusAt([{ ...opening, break_starts_at: "16:00", break_ends_at: "01:00" }], now), "unknown");
+});
+
 const joinedRow = {
   branch_id: "b1",
   slug: "one",
@@ -233,7 +274,10 @@ test("uses normalized public D1 queries and never writes nearby origins", async 
           return this;
         },
         async all<T>() {
-          if (sql.includes("FROM areas")) return { results: [] as T[] };
+          if (sql.includes("FROM areas")) {
+            assert.deepEqual(statement.values, []);
+            return { results: [{ id: "anyang", name: "안양", kind: "district", lat: 37.3943, lng: 126.9568 }] as T[] };
+          }
           if (sql.includes("FROM source_evidence")) {
             assert.deepEqual(statement.values, ["b1"]);
             return { results: [
@@ -275,13 +319,16 @@ test("uses normalized public D1 queries and never writes nearby origins", async 
   };
 
   const repository = createD1ShopRepository(database, new Date("2026-07-17T00:00:00.000Z"));
+  const areas = await repository.listAreas();
   const shops = await repository.listPublicBranches({ lat: 37.39, lng: 126.96 }, 3);
   const detail = await repository.getPublicShopBySlug("one");
 
+  assert.deepEqual(areas, [{ id: "anyang", name: "안양", kind: "district", lat: 37.3943, lng: 126.9568 }]);
   assert.equal(shops.length, 1);
   assert.deepEqual(shops.map((shop) => shop.id), ["b1"]);
   assert.deepEqual(detail?.evidence.map((item) => item.id), ["e2", "e1"]);
-  const nearby = statements[0];
+  const nearby = statements.find((statement) => statement.sql.includes("b.lat BETWEEN ? AND ?"));
+  assert.ok(nearby);
   assert.match(nearby.sql, /b\.public_status = 'active'/);
   assert.match(nearby.sql, /b\.verification_status IN \('verified', 'candidate', 'stale'\)/);
   assert.match(nearby.sql, /m\.verification_status IN \('verified', 'candidate', 'stale'\)/);

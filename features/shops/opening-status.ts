@@ -39,7 +39,7 @@ function containsTime(target: number, start: number, end: number): boolean {
 type Interval = {
   row: OpeningStatusHours;
   opensAt: number;
-  closesAt: number;
+  endsAt: number;
   breakStartsAt: number | null;
   breakEndsAt: number | null;
 };
@@ -53,16 +53,20 @@ function intervalFor(row: OpeningStatusHours): Interval | "closed" | null {
   const opensAt = minutesSinceMidnight(row.opens_at);
   const closesAt = minutesSinceMidnight(row.closes_at);
   if (opensAt === null || closesAt === null || opensAt === closesAt) return null;
+  const endsAt = closesAt + (closesAt < opensAt ? 1_440 : 0);
 
   const hasBreakStart = row.break_starts_at !== null;
   const hasBreakEnd = row.break_ends_at !== null;
   if (hasBreakStart !== hasBreakEnd) return null;
-  if (!hasBreakStart) return { row, opensAt, closesAt, breakStartsAt: null, breakEndsAt: null };
+  if (!hasBreakStart) return { row, opensAt, endsAt, breakStartsAt: null, breakEndsAt: null };
 
   const breakStartsAt = minutesSinceMidnight(row.break_starts_at);
   const breakEndsAt = minutesSinceMidnight(row.break_ends_at);
-  if (breakStartsAt === null || breakEndsAt === null) return null;
-  return { row, opensAt, closesAt, breakStartsAt, breakEndsAt };
+  if (breakStartsAt === null || breakEndsAt === null || breakStartsAt === breakEndsAt) return null;
+  const normalizedBreakStart = breakStartsAt < opensAt ? breakStartsAt + 1_440 : breakStartsAt;
+  const normalizedBreakEnd = breakEndsAt <= normalizedBreakStart ? breakEndsAt + 1_440 : breakEndsAt;
+  if (normalizedBreakStart < opensAt || normalizedBreakStart >= normalizedBreakEnd || normalizedBreakEnd > endsAt) return null;
+  return { row, opensAt, endsAt, breakStartsAt: normalizedBreakStart, breakEndsAt: normalizedBreakEnd };
 }
 
 function daySchedule(rows: readonly OpeningStatusHours[]): DaySchedule {
@@ -93,21 +97,25 @@ export function openingStatusAt(
   const target = local.weekday * 1_440 + local.minute;
   const intervals = [
     ...today.intervals,
-    ...yesterday.intervals.filter((interval) => interval.closesAt < interval.opensAt),
+    ...yesterday.intervals.filter((interval) => interval.endsAt > 1_440),
   ];
+  let open = false;
   for (const interval of intervals) {
-    const { row, opensAt, closesAt, breakStartsAt, breakEndsAt } = interval;
+    const { row, opensAt, endsAt, breakStartsAt, breakEndsAt } = interval;
 
     const start = row.weekday * 1_440 + opensAt;
-    const end = row.weekday * 1_440 + closesAt + (closesAt < opensAt ? 1_440 : 0);
+    const end = row.weekday * 1_440 + endsAt;
     for (const weekOffset of [-10_080, 0, 10_080]) {
       if (!containsTime(target, start + weekOffset, end + weekOffset)) continue;
 
-      if (breakStartsAt === null || breakEndsAt === null) return "open";
+      if (breakStartsAt === null || breakEndsAt === null) {
+        open = true;
+        continue;
+      }
       const breakStart = row.weekday * 1_440 + breakStartsAt + weekOffset;
-      const breakEnd = row.weekday * 1_440 + breakEndsAt + (breakEndsAt < breakStartsAt ? 1_440 : 0) + weekOffset;
-      return containsTime(target, breakStart, breakEnd) ? "closed" : "open";
+      const breakEnd = row.weekday * 1_440 + breakEndsAt + weekOffset;
+      if (!containsTime(target, breakStart, breakEnd)) open = true;
     }
   }
-  return "closed";
+  return open ? "open" : "closed";
 }
