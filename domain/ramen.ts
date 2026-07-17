@@ -59,8 +59,38 @@ export interface Area {
   lng: number;
 }
 
-export function isPublicBranch(value: Pick<BranchSummary, "publicStatus" | "verificationStatus" | "lat" | "lng"> | { publicStatus: PublicStatus; verificationStatus: VerificationStatus; lat: number | null; lng: number | null }) {
-  return value.publicStatus === "active" && value.verificationStatus !== "rejected" && Number.isFinite(value.lat) && Number.isFinite(value.lng);
+export type PublicVerificationStatus = Exclude<VerificationStatus, "rejected">;
+export type PublicMenuItem = Omit<MenuItem, "verificationStatus"> & {
+  verificationStatus: PublicVerificationStatus;
+};
+export type PublicBranchSummary = Omit<BranchSummary, "publicStatus" | "verificationStatus" | "menus"> & {
+  publicStatus: "active";
+  verificationStatus: PublicVerificationStatus;
+  menus: PublicMenuItem[];
+};
+export type PublicShopDetail = Omit<ShopDetail, "publicStatus" | "verificationStatus" | "menus"> & {
+  publicStatus: "active";
+  verificationStatus: PublicVerificationStatus;
+  menus: PublicMenuItem[];
+};
+
+type PublicBranchCheck = {
+  publicStatus: PublicStatus;
+  verificationStatus: VerificationStatus;
+  lat: number | null;
+  lng: number | null;
+};
+
+export function isPublicBranch(value: BranchSummary): value is PublicBranchSummary;
+export function isPublicBranch(value: PublicBranchCheck): boolean;
+export function isPublicBranch(value: PublicBranchCheck): boolean {
+  if (value.publicStatus !== "active" || value.verificationStatus === "rejected" || !Number.isFinite(value.lat) || !Number.isFinite(value.lng)) {
+    return false;
+  }
+  if (!("menus" in value)) return true;
+  return Array.isArray(value.menus) && value.menus.every(
+    (menu) => typeof menu === "object" && menu !== null && "verificationStatus" in menu && menu.verificationStatus !== "rejected",
+  );
 }
 
 export function effectiveVerificationStatus(status: VerificationStatus, checkedAt: string | null, entity: "branch" | "menu", now = new Date()): VerificationStatus {
