@@ -158,7 +158,7 @@ export function parseTasteIntent(text: string, selections: PreferenceSelections)
   // 4. Mood is the weakest inference and cannot undo a spicy exclusion.
   const moodClauses = normalized
     .replace(
-      /((?:화(?:가|는)?\s*(?:안\s*)?(?:났|나)|짜증(?:은|이)?\s*(?:안\s*)?나|열\s*(?:안\s*)?받|스트레스(?:는|를|가)?\s*(?:(?:안\s*)?(?:받았|받)|받지\s*않았)))고(?=\s*(?:업무\s*)?(?:스트레스|화|짜증|열))/g,
+      /((?:화(?:가|는)?\s*(?:안\s*)?(?:났|나)|짜증(?:은|이)?\s*(?:안\s*)?나|열\s*(?:안\s*)?받|스트레스(?:는|를|가)?\s*(?:(?:안\s*)?(?:받았|받)|받지\s*않았)))고(?=\s)/g,
       "$1고\u0000",
     )
     .split(/[,.;!?\u0000]|(?:지만|는데|으나|반면)/)

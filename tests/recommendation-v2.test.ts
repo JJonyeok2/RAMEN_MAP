@@ -173,6 +173,17 @@ test("binds mood negation to its own clause", () => {
   assert.equal(parseTasteIntent("회의가 끝나고 화가 나", {}).wantsKarai, true);
 });
 
+test("binds mood scope across modified right-hand -고 clauses", () => {
+  for (const prompt of [
+    "화는 안 났고 오늘은 짜증이 나",
+    "스트레스는 안 받았고 퇴근길엔 화가 나",
+  ]) {
+    const intent = parseTasteIntent(prompt, {});
+    assert.equal(intent.wantsKarai, true, prompt);
+    assert.equal(intent.spicinessTarget, 4, prompt);
+  }
+});
+
 test("anger and stress prefer actual karai or spicy menu profiles", () => {
   const intent = parseTasteIntent("오늘 화가 나서 스트레스 풀고 싶어", {});
   assert.equal(intent.wantsKarai, true);
