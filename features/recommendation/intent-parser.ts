@@ -52,6 +52,8 @@ const spicyExclusionPatterns = [
 function explicitStyles(text: string): BrothStyle[] | null {
   const chintanTerm = /(?:청탕|친탄|치탄|chintan)/i;
   const paitanTerm = /(?:백탕|파이탄|빠이탄|paitan)/i;
+  const dippingTerm = /(?:츠케멘|츠케|찍어\s*먹)/;
+  const dryTerm = /(?:마제소바|마제|비벼\s*먹)/;
   const mentionsBoth = chintanTerm.test(text) && paitanTerm.test(text);
   if (mentionsBoth && /(?:상관\s*없|아무거나|둘\s*다|어느\s*쪽이든)/.test(text)) {
     return [];
@@ -63,9 +65,10 @@ function explicitStyles(text: string): BrothStyle[] | null {
   const styles: BrothStyle[] = [];
   if (chintanTerm.test(text) && !avoidsChintan) append(styles, "chintan");
   if (paitanTerm.test(text) && !avoidsPaitan) append(styles, "paitan");
-  if (/(?:츠케멘|츠케|찍어\s*먹)/.test(text)) append(styles, "dipping");
-  if (/(?:마제소바|마제|비벼\s*먹)/.test(text)) append(styles, "dry");
-  const hasExplicitStyle = chintanTerm.test(text) || paitanTerm.test(text) || styles.length > 0;
+  if (dippingTerm.test(text) && !isExplicitlyExcluded(text, dippingTerm)) append(styles, "dipping");
+  if (dryTerm.test(text) && !isExplicitlyExcluded(text, dryTerm)) append(styles, "dry");
+  const hasExplicitStyle = chintanTerm.test(text) || paitanTerm.test(text)
+    || dippingTerm.test(text) || dryTerm.test(text);
   return hasExplicitStyle ? styles : null;
 }
 
@@ -153,7 +156,13 @@ export function parseTasteIntent(text: string, selections: PreferenceSelections)
   }
 
   // 4. Mood is the weakest inference and cannot undo a spicy exclusion.
-  const moodClauses = normalized.split(/[,.;!?]|(?:지만|는데|으나|반면)/).map((clause) => clause.trim());
+  const moodClauses = normalized
+    .replace(
+      /((?:화(?:가|는)?\s*(?:안\s*)?(?:났|나)|짜증(?:은|이)?\s*(?:안\s*)?나|열\s*(?:안\s*)?받|스트레스(?:는|를|가)?\s*(?:(?:안\s*)?(?:받았|받)|받지\s*않았)))고(?=\s*(?:업무\s*)?(?:스트레스|화|짜증|열))/g,
+      "$1고\u0000",
+    )
+    .split(/[,.;!?\u0000]|(?:지만|는데|으나|반면)/)
+    .map((clause) => clause.trim());
   const moodInference = moodClauses.some((clause) => {
     const stressMood = /스트레스/.test(clause) && !/스트레스.{0,8}(?:안\s*받|받지\s*않|없)/.test(clause);
     const angerMood = /(?:화가?\s*(?:나|났)|화났|짜증|열\s*받|열받)/.test(clause)

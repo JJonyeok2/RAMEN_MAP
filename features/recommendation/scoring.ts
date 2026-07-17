@@ -32,6 +32,10 @@ function isKaraiProfile(menu: MenuItem): boolean {
   return /(?:카라이|매운|매콤|얼큰|spicy)/i.test(description) || (menu.spicinessLevel ?? -1) >= 3;
 }
 
+function profileProximity(value: number | null, target: number | null, range: number): number | null {
+  return value === null || target === null ? null : clamp(1 - Math.abs(value - target) / range);
+}
+
 function tasteScore(menu: MenuItem, intent: TasteIntent): number {
   const components: number[] = [];
   if (intent.ramenTypes.length > 0) {
@@ -44,10 +48,10 @@ function tasteScore(menu: MenuItem, intent: TasteIntent): number {
     components.push(intent.brothBases.some((base) => menu.brothBases.includes(base)) ? 1 : 0);
   }
   if (intent.bodyTarget !== null) {
-    components.push(menu.bodyLevel === null ? 0 : clamp(1 - Math.abs(menu.bodyLevel - intent.bodyTarget) / 4));
+    components.push(profileProximity(menu.bodyLevel, intent.bodyTarget, 4) ?? 0);
   }
   if (intent.spicinessTarget !== null) {
-    components.push(menu.spicinessLevel === null ? 0 : clamp(1 - Math.abs(menu.spicinessLevel - intent.spicinessTarget) / 5));
+    components.push(profileProximity(menu.spicinessLevel, intent.spicinessTarget, 5) ?? 0);
   }
   if (intent.wantsKarai) components.push(isKaraiProfile(menu) ? 1 : 0);
   return components.length === 0 ? 1 : components.reduce((sum, value) => sum + value, 0) / components.length;
@@ -58,8 +62,15 @@ function tasteReason(menu: MenuItem, intent: TasteIntent): string {
   if (menu.brothStyle !== null && intent.brothStyles.includes(menu.brothStyle)) return "요청한 국물 스타일과 잘 맞아요";
   if (intent.ramenTypes.some((type) => menu.ramenTypes.includes(type))) return "요청한 라멘 종류와 잘 맞아요";
   if (intent.brothBases.some((base) => menu.brothBases.includes(base))) return "원하는 육수 재료와 잘 맞아요";
-  if (intent.bodyTarget !== null || intent.spicinessTarget !== null) return "원하는 농도와 맵기에 가까워요";
-  return "별도 취향 조건 없이 고른 메뉴예요";
+  const bodyIsClose = (profileProximity(menu.bodyLevel, intent.bodyTarget, 4) ?? -1) >= 0.5;
+  const spicinessIsClose = (profileProximity(menu.spicinessLevel, intent.spicinessTarget, 5) ?? -1) >= 0.5;
+  if (bodyIsClose && spicinessIsClose) return "원하는 농도와 맵기에 가까운 프로필이에요";
+  if (bodyIsClose) return "원하는 농도에 가까운 프로필이에요";
+  if (spicinessIsClose) return "원하는 맵기에 가까운 프로필이에요";
+  const hasPreference = intent.ramenTypes.length > 0 || intent.brothStyles.length > 0
+    || intent.brothBases.length > 0 || intent.bodyTarget !== null
+    || intent.spicinessTarget !== null || intent.wantsKarai;
+  return hasPreference ? "취향 일치 정보가 확인되지 않았어요" : "별도 취향 조건 없이 고른 메뉴예요";
 }
 
 export function scoreMenu(input: ScoreMenuInput): MenuScore | null {

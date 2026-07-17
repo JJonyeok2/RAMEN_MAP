@@ -167,6 +167,10 @@ test("binds mood negation to its own clause", () => {
   assert.equal(parseTasteIntent("스트레스 안 받았는데 화가 나", {}).wantsKarai, true);
   assert.equal(parseTasteIntent("화는 안 났지만 짜증은 나", {}).wantsKarai, true);
   assert.equal(parseTasteIntent("스트레스는 안 받았지만 업무 스트레스가 심해", {}).wantsKarai, true);
+  assert.equal(parseTasteIntent("화는 안 났고 짜증은 나", {}).wantsKarai, true);
+  assert.equal(parseTasteIntent("스트레스는 안 받았고 화가 나", {}).wantsKarai, true);
+  assert.equal(parseTasteIntent("회의가 끝나고 화가 안 나", {}).wantsKarai, false);
+  assert.equal(parseTasteIntent("회의가 끝나고 화가 나", {}).wantsKarai, true);
 });
 
 test("anger and stress prefer actual karai or spicy menu profiles", () => {
@@ -216,6 +220,16 @@ test("dry and dipping requests suppress descriptive soup inference", () => {
   assert.deepEqual(parseTasteIntent("깔끔한 마제소바", {}).brothStyles, ["dry"]);
   assert.deepEqual(parseTasteIntent("시원한 츠케멘", {}).brothStyles, ["dipping"]);
   assert.deepEqual(parseTasteIntent("크리미한 마제소바", {}).brothStyles, ["dry"]);
+});
+
+test("applies dry and dipping exclusions before deriving styles", () => {
+  const dryOnly = parseTasteIntent("츠케멘 말고 마제소바", {});
+  assert.deepEqual(dryOnly.ramenTypes, ["mazesoba"]);
+  assert.deepEqual(dryOnly.brothStyles, ["dry"]);
+
+  const dippingOnly = parseTasteIntent("마제소바 말고 츠케멘", {});
+  assert.deepEqual(dippingOnly.ramenTypes, ["tsukemen"]);
+  assert.deepEqual(dippingOnly.brothStyles, ["dipping"]);
 });
 
 test("parses approved explicit and descriptive taste vocabulary", () => {
@@ -299,6 +313,40 @@ test("taste proximity scores body and spiciness over their complete ranges", () 
   });
   // both taste proximity dimensions are zero; only opening and trust contribute
   assert.equal(result?.score, 20);
+});
+
+test("taste reasons never claim closeness without a positive known profile match", () => {
+  const branch = makeBranch();
+  const oppositeBody = scoreMenu({
+    branch,
+    menu: makeMenu({ ramenTypes: [], brothStyle: null, brothBases: [], bodyLevel: 5, spicinessLevel: null }),
+    intent: { ...emptyIntent, bodyTarget: 1 },
+    mode: "taste",
+    distanceKm: 0,
+    radiusKm: 3,
+  });
+  const unknownSpiciness = scoreMenu({
+    branch,
+    menu: makeMenu({ ramenTypes: [], brothStyle: null, brothBases: [], bodyLevel: null, spicinessLevel: null }),
+    intent: { ...emptyIntent, spicinessTarget: 4 },
+    mode: "taste",
+    distanceKm: 0,
+    radiusKm: 3,
+  });
+  assert.equal(oppositeBody?.reasons[0], "취향 일치 정보가 확인되지 않았어요");
+  assert.equal(unknownSpiciness?.reasons[0], "취향 일치 정보가 확인되지 않았어요");
+
+  for (const bodyLevel of [5, null] as const) {
+    const partiallyMatched = scoreMenu({
+      branch,
+      menu: makeMenu({ ramenTypes: [], brothStyle: null, brothBases: [], bodyLevel, spicinessLevel: 4 }),
+      intent: { ...emptyIntent, bodyTarget: 1, spicinessTarget: 4 },
+      mode: "taste",
+      distanceKm: 0,
+      radiusKm: 3,
+    });
+    assert.equal(partiallyMatched?.reasons[0], "원하는 맵기에 가까운 프로필이에요");
+  }
 });
 
 test("rejects a menu that violates the avoid-spicy hard constraint", () => {
@@ -397,6 +445,38 @@ test("falls back to 30km when fewer than three eligible branches exist", () => {
   assert.equal(response.expanded, true);
 });
 
+test("returns a stable empty response", () => {
+  assert.deepEqual(recommend([], {
+    origin, mode: "balanced", quick: false, intent: emptyIntent,
+  }), {
+    radiusKm: 30,
+    verified: [],
+    candidates: [],
+    expanded: true,
+  });
+});
+
+test("includes branches exactly on the 10km and 30km boundaries", () => {
+  const latitudeAt = (kilometers: number) => origin.lat + kilometers / 6371.0088 * 180 / Math.PI;
+  const ten = recommend([
+    makeBranch({ id: "ten-near", lat: latitudeAt(1) }),
+    makeBranch({ id: "ten-middle", lat: latitudeAt(9) }),
+    makeBranch({ id: "ten-boundary", lat: latitudeAt(10) }),
+  ], { origin, mode: "distance", quick: false, intent: emptyIntent });
+  assert.equal(ten.radiusKm, 10);
+  assert.ok(ten.verified.some((item) => item.branch.id === "ten-boundary"));
+
+  const thirty = recommend([
+    makeBranch({ id: "thirty-near", lat: latitudeAt(1) }),
+    makeBranch({ id: "thirty-middle", lat: latitudeAt(29) }),
+    makeBranch({ id: "thirty-boundary", lat: latitudeAt(30) }),
+    makeBranch({ id: "thirty-outside", lat: latitudeAt(30.001) }),
+  ], { origin, mode: "distance", quick: false, intent: emptyIntent });
+  assert.equal(thirty.radiusKm, 30);
+  assert.ok(thirty.verified.some((item) => item.branch.id === "thirty-boundary"));
+  assert.ok(!thirty.verified.some((item) => item.branch.id === "thirty-outside"));
+});
+
 test("excludes branches outside the selected radius using exact haversine distance", () => {
   const branches = [
     makeBranch({ id: "inside-1", lat: 37.39 + (2.99 / 111.2) }),
@@ -465,6 +545,15 @@ test("picks the highest-scoring eligible menu per branch", () => {
   ] });
   const response = recommend([branch], { origin, mode: "taste", quick: false, intent: parseTasteIntent("시오 청탕", {}) });
   assert.equal(response.verified[0]?.menuId, "chintan");
+});
+
+test("breaks equal menu scores by menu ID within a branch", () => {
+  const branch = makeBranch({ menus: [
+    makeMenu({ id: "menu-z" }),
+    makeMenu({ id: "menu-a" }),
+  ] });
+  const response = recommend([branch], { origin, mode: "balanced", quick: false, intent: emptyIntent });
+  assert.equal(response.verified[0]?.menuId, "menu-a");
 });
 
 test("sorts by score, then distance, then stable identifiers and caps each group at three", () => {
