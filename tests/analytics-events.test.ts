@@ -7,7 +7,7 @@ const validEvent = {
   sessionId: "b8a3f064-9462-4a3b-a7f4-c5f9e0e00a11",
   eventType: "directions_clicked",
   elapsedMs: 42_000,
-  areaId: "area:anyang",
+  areaId: "anyang",
   radiusKm: 3,
   verificationStatus: "verified",
 };
@@ -40,15 +40,16 @@ test("accepts only the approved coarse optional dimensions", () => {
 });
 
 test("accepts only canonical bounded area identifiers", () => {
-  assert.equal(parseProductEvent(validEvent).areaId, "area:anyang");
+  assert.equal(parseProductEvent(validEvent).areaId, "anyang");
   for (const areaId of [
     "private note 37.39,126.96",
+    "",
     "area:",
-    "area:Anyang",
-    "area:anyang station",
-    "area:anyang--station",
-    "area:anyang,37.39",
-    `area:${"a".repeat(65)}`,
+    "Anyang",
+    "anyang station",
+    "anyang--station",
+    "anyang,37.39",
+    "a".repeat(65),
   ]) {
     assert.throws(() => parseProductEvent({ ...validEvent, areaId }), /지역/);
   }

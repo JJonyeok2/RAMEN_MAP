@@ -123,7 +123,7 @@ test("events validates before D1 and persists only privacy-approved columns", as
   const response = await handler(new Request("http://local/api/v1/events", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId, eventType: "directions_clicked", elapsedMs: 12, areaId: "area:anyang", radiusKm: 3, verificationStatus: "verified" }),
+    body: JSON.stringify({ sessionId, eventType: "directions_clicked", elapsedMs: 12, areaId: "anyang", radiusKm: 3, verificationStatus: "verified" }),
   }));
   assert.equal(response.status, 204);
   assert.match(sql, /INSERT INTO product_events/);
@@ -131,7 +131,7 @@ test("events validates before D1 and persists only privacy-approved columns", as
   assert.equal(bindings.includes(sessionId), false);
   assert.equal(typeof bindings[1], "string");
   assert.match(bindings[1] as string, /^[a-f0-9]{64}$/);
-  assert.equal(bindings.filter((value) => value === "area:anyang").length, 1);
+  assert.equal(bindings.filter((value) => value === "anyang").length, 1);
 });
 
 test("events returns 400 when a canonical area does not exist and persists no row", async () => {
@@ -145,7 +145,7 @@ test("events returns 400 when a canonical area does not exist and persists no ro
   const response = await createEventsHandler(async () => db)(new Request("http://local/api/v1/events", {
     method: "POST",
     headers: { "content-type": "application/activity+json" },
-    body: JSON.stringify({ sessionId: crypto.randomUUID(), eventType: "quick_started", areaId: "area:not-found" }),
+    body: JSON.stringify({ sessionId: crypto.randomUUID(), eventType: "quick_started", areaId: "not-found" }),
   }));
   assert.equal(response.status, 400);
   assertJson(response);

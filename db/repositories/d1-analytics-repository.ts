@@ -49,7 +49,7 @@ export function createD1AnalyticsRepository(db: D1DatabaseLike) {
           event_values.elapsed_ms, event_values.area_id, event_values.radius_km,
           event_values.verification_status
         FROM event_values
-        JOIN areas ON event_values.area_id = 'area:' || areas.id
+        JOIN areas ON event_values.area_id = areas.id
       `).bind(...values).run();
       const changes = changedRows(result);
       if (changes === null) throw new Error("D1 did not report inserted row changes.");

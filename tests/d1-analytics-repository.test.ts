@@ -8,7 +8,7 @@ const event = {
   sessionId: "b8a3f064-9462-4a3b-a7f4-c5f9e0e00a11",
   eventType: "directions_clicked" as const,
   elapsedMs: 42_000,
-  areaId: "area:anyang",
+  areaId: "anyang",
   radiusKm: 3 as const,
   verificationStatus: "verified" as const,
 };
@@ -34,6 +34,7 @@ test("persists a known canonical area through one privacy-limited insert-select"
   assert.equal(capture.runs, 1);
   assert.match(capture.sql ?? "", /INSERT INTO product_events/);
   assert.match(capture.sql ?? "", /JOIN areas/);
+  assert.match(capture.sql ?? "", /event_values\.area_id = areas\.id/);
   assert.doesNotMatch(capture.sql ?? "", /\b(?:lat|lng|text|user_agent|ip)\b/i);
   assert.equal(capture.bindings?.filter((value) => value === event.areaId).length, 1);
   assert.equal(capture.bindings?.includes(event.sessionId), false);
@@ -43,7 +44,7 @@ test("persists a known canonical area through one privacy-limited insert-select"
 test("reports an unknown canonical area when D1 changes are zero", async () => {
   const capture: { sql?: string; bindings?: unknown[]; runs?: number } = {};
   const repository = createD1AnalyticsRepository(statement({ meta: { changes: 0 } }, capture));
-  assert.equal(await repository.record({ ...event, areaId: "area:unknown" }), false);
+  assert.equal(await repository.record({ ...event, areaId: "unknown" }), false);
   assert.equal(capture.runs, 1);
 });
 
@@ -84,10 +85,10 @@ test("inserts only a canonical ID backed by a normalized area row", async () => 
   try {
     const repository = createD1AnalyticsRepository(db);
     assert.equal(await repository.record(event), true);
-    assert.equal(await repository.record({ ...event, areaId: "area:unknown" }), false);
+    assert.equal(await repository.record({ ...event, areaId: "unknown" }), false);
     assert.deepEqual(
       sqlite.prepare("SELECT area_id FROM product_events").all().map((row) => row.area_id),
-      ["area:anyang"],
+      ["anyang"],
     );
   } finally {
     sqlite.close();
