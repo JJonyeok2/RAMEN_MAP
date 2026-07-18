@@ -262,6 +262,23 @@ test("groups normalized menu rows and handles stale windows and invalid profiles
   });
 });
 
+test("caps individually valid menus at the client contract limit in deterministic row order", () => {
+  const rows = Array.from({ length: 51 }, (_, index) => ({
+    ...joinedRow,
+    menu_id: `menu-${String(index).padStart(3, "0")}`,
+    menu_name: `메뉴 ${index}`,
+  }));
+
+  const branches = mapBranchRows(rows, new Date("2026-07-17T00:00:00.000Z"));
+
+  assert.equal(branches.length, 1);
+  assert.equal(branches[0].menus.length, 50);
+  assert.deepEqual(
+    branches[0].menus.map((menu) => menu.id),
+    rows.slice(0, 50).map((row) => row.menu_id),
+  );
+});
+
 test("drops malformed public D1 records individually instead of poisoning valid rows", () => {
   const branches = mapBranchRows([
     joinedRow,
@@ -305,6 +322,37 @@ test("drops malformed areas while retaining valid public area records", async ()
   assert.deepEqual(await createD1ShopRepository(database).listAreas(), [
     { id: "anyang", name: "안양", kind: "district", lat: 37.39, lng: 126.96 },
   ]);
+});
+
+test("caps individually valid areas at the client contract limit in deterministic query order", async () => {
+  const rows = Array.from({ length: 201 }, (_, index) => ({
+    id: `area-${String(index).padStart(3, "0")}`,
+    name: "같은 이름",
+    kind: "district",
+    lat: 37.39,
+    lng: 126.96,
+  }));
+  let query = "";
+  const database: D1DatabaseLike = {
+    prepare(sql) {
+      query = sql;
+      return {
+        bind() { return this; },
+        async all<T>() { return { results: rows as T[] }; },
+        async first<T>() { return null as T | null; },
+        async run() {},
+      };
+    },
+  };
+
+  const areas = await createD1ShopRepository(database).listAreas();
+
+  assert.equal(areas.length, 200);
+  assert.deepEqual(
+    areas.map((area) => area.id),
+    rows.slice(0, 200).map((row) => row.id),
+  );
+  assert.match(query, /ORDER BY name, id/);
 });
 
 test("associates public evidence with branch and menu records without private columns", async () => {

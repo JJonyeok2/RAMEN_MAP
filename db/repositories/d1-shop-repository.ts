@@ -2,6 +2,8 @@ import type { D1DatabaseLike } from "../d1.ts";
 import type { AreaRow } from "../schema.ts";
 import {
   effectiveVerificationStatus,
+  maxPublicAreas,
+  maxPublicMenusPerBranch,
   type Area,
   type BrothBase,
   type BrothStyle,
@@ -245,7 +247,7 @@ function mapBranchDetails(rows: readonly JoinedBranchRow[], now: Date): MappedBr
 
     const menu = menuFromRow(row, now);
     const ids = menuIds.get(id)!;
-    if (menu && !ids.has(menu.id)) {
+    if (menu && !ids.has(menu.id) && mapped.branch.menus.length < maxPublicMenusPerBranch) {
       mapped.branch.menus.push(menu);
       ids.add(menu.id);
     }
@@ -301,11 +303,11 @@ export function createD1ShopRepository(
 
   return {
     async listAreas() {
-      const result = await db.prepare("SELECT id, name, kind, lat, lng FROM areas ORDER BY name").all<AreaRow>();
+      const result = await db.prepare("SELECT id, name, kind, lat, lng FROM areas ORDER BY name, id").all<AreaRow>();
       return (result.results ?? []).flatMap((row) => {
         const area = mapArea(row);
         return area ? [area] : [];
-      });
+      }).slice(0, maxPublicAreas);
     },
 
     async listPublicBranches(origin: Coordinates, radiusKm: 3 | 10 | 30) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 import type { D1DatabaseLike, D1Statement } from "../db/d1.ts";
 import { createAdminService } from "../features/admin/admin-service.ts";
@@ -27,10 +28,99 @@ function capturedDatabase(
     },
     async batch(statements) {
       batches.push(statements as CapturedStatement[]);
-      return [];
+      return statements.map(() => ({ meta: { changes: 1 } }));
     },
   };
   return { db, batches };
+}
+
+function concurrentDatabase(beforeBatch: (database: DatabaseSync) => void) {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE branches (
+      id TEXT PRIMARY KEY, branch_name TEXT, region TEXT NOT NULL, district TEXT NOT NULL,
+      address TEXT NOT NULL, lat REAL, lng REAL, phone TEXT, hours_text TEXT,
+      verification_status TEXT NOT NULL, public_status TEXT NOT NULL,
+      last_verified_at TEXT, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE opening_hours (
+      id TEXT PRIMARY KEY, branch_id TEXT NOT NULL, weekday INTEGER NOT NULL,
+      opens_at TEXT, closes_at TEXT, break_starts_at TEXT, break_ends_at TEXT,
+      last_order_at TEXT, is_closed INTEGER NOT NULL
+    );
+    CREATE TABLE menu_items (
+      id TEXT PRIMARY KEY, branch_id TEXT NOT NULL, name TEXT NOT NULL, price INTEGER,
+      availability_status TEXT NOT NULL, verification_status TEXT NOT NULL,
+      last_verified_at TEXT, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE menu_profiles (
+      menu_item_id TEXT PRIMARY KEY, ramen_types TEXT NOT NULL, broth_style TEXT,
+      body_level INTEGER, spiciness_level INTEGER, broth_bases TEXT NOT NULL, tags TEXT NOT NULL
+    );
+    CREATE TABLE verification_events (
+      id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+      action TEXT NOT NULL, previous_value TEXT, next_value TEXT, note TEXT NOT NULL,
+      actor TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    INSERT INTO branches VALUES (
+      'branch:1', '본점', '서울', '마포구', '기존 주소', 37.5, 126.9, NULL, NULL,
+      'candidate', 'hidden', NULL, '2026-07-17T00:00:00.000Z'
+    );
+    INSERT INTO opening_hours VALUES (
+      'hours:old', 'branch:1', 1, '11:00', '20:00', NULL, NULL, '19:30', 0
+    );
+    INSERT INTO menu_items VALUES (
+      'menu:1', 'branch:1', '기존 시오', 10000, 'seasonal', 'candidate', NULL,
+      '2026-07-17T00:00:00.000Z'
+    );
+    INSERT INTO menu_profiles VALUES (
+      'menu:1', '["shio"]', 'chintan', 2, 0, '["닭"]', '["기존"]'
+    );
+  `);
+
+  let didInterleave = false;
+  const db: D1DatabaseLike = {
+    prepare(sql) {
+      const statement: CapturedStatement = {
+        sql,
+        bindings: [],
+        bind(...values) {
+          statement.bindings = values;
+          return statement;
+        },
+        async all<T>() {
+          return { results: database.prepare(sql).all(...statement.bindings as SQLInputValue[]) as T[] };
+        },
+        async first<T>() {
+          return (database.prepare(sql).get(...statement.bindings as SQLInputValue[]) ?? null) as T | null;
+        },
+        async run() {
+          const result = database.prepare(sql).run(...statement.bindings as SQLInputValue[]);
+          return { meta: { changes: Number(result.changes) } };
+        },
+      };
+      return statement;
+    },
+    async batch(statements) {
+      if (!didInterleave) {
+        beforeBatch(database);
+        didInterleave = true;
+      }
+      database.exec("BEGIN");
+      try {
+        const results = (statements as CapturedStatement[]).map((statement) => {
+          const result = database.prepare(statement.sql).run(...statement.bindings as SQLInputValue[]);
+          return { meta: { changes: Number(result.changes) } };
+        });
+        database.exec("COMMIT");
+        return results;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+  };
+  return { database, db };
 }
 
 const branchPreimage = {
@@ -281,6 +371,119 @@ test("rejects updating a menu that does not belong to the route branch before ba
     /소속/,
   );
   assert.equal(batches.length, 0);
+});
+
+test("audits exact canonical before and after menu snapshots", async () => {
+  const previous = {
+    name: "기존 시오",
+    price: 10_000,
+    availability_status: "seasonal",
+    verification_status: "candidate",
+    last_verified_at: null,
+    updated_at: "2026-07-17T00:00:00.000Z",
+    ramen_types: '["shio"]',
+    broth_style: "chintan",
+    body_level: 2,
+    spiciness_level: 0,
+    broth_bases: '["닭"]',
+    tags: '["기존"]',
+  };
+  const { db, batches } = capturedDatabase((statement) => (
+    /FROM menu_items/.test(statement.sql) ? previous : null
+  ));
+  const service = createAdminService(db, () => "2026-07-18T00:00:00.000Z", () => "fixed-id");
+
+  await service.updateMenu("branch:1", "menu:1", { ...menuUpdate, name: "  새 시오  " }, "메뉴 재확인");
+
+  const [menuMutation, , audit] = batches[0];
+  assert.match(menuMutation.sql, /WHERE id = \? AND branch_id = \? AND updated_at = \?/);
+  assert.deepEqual(JSON.parse(String(audit.bindings[4])), {
+    name: "기존 시오",
+    price: 10_000,
+    availabilityStatus: "seasonal",
+    verificationStatus: "candidate",
+    lastVerifiedAt: null,
+    updatedAt: "2026-07-17T00:00:00.000Z",
+    profile: {
+      ramenTypes: ["shio"],
+      brothStyle: "chintan",
+      bodyLevel: 2,
+      spicinessLevel: 0,
+      brothBases: ["닭"],
+      tags: ["기존"],
+    },
+  });
+  assert.deepEqual(JSON.parse(String(audit.bindings[5])), {
+    name: "새 시오",
+    price: 12_000,
+    availabilityStatus: "available",
+    verificationStatus: "verified",
+    lastVerifiedAt: "2026-07-18T00:00:00.000Z",
+    updatedAt: "2026-07-18T00:00:00.000Z",
+    profile: {
+      ramenTypes: ["shio"],
+      brothStyle: "chintan",
+      bodyLevel: 2,
+      spicinessLevel: 0,
+      brothBases: ["닭"],
+      tags: ["깔끔"],
+    },
+  });
+});
+
+test("stale revisions reject branch, menu, and state writes without misleading audits", async (context) => {
+  await context.test("branch facts", async () => {
+    const { database, db } = concurrentDatabase((sqlite) => {
+      sqlite.prepare("UPDATE branches SET address = ?, updated_at = ? WHERE id = ?")
+        .run("동시 변경 주소", "2026-07-17T12:00:00.000Z", "branch:1");
+    });
+    const service = createAdminService(db, () => "2026-07-18T00:00:00.000Z", () => "fixed-id");
+    await assert.rejects(() => service.updateBranch("branch:1", {
+      branchName: "본점",
+      region: "서울",
+      district: "마포구",
+      address: "내 변경 주소",
+      lat: 37.5,
+      lng: 126.9,
+      phone: null,
+      hoursText: null,
+      weeklyHours: [],
+    }, "지점 재확인"), /충돌|다시/);
+    assert.equal(database.prepare("SELECT address FROM branches WHERE id = ?").get("branch:1")?.address, "동시 변경 주소");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM opening_hours").get()?.count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
+  });
+
+  await context.test("menu facts", async () => {
+    const { database, db } = concurrentDatabase((sqlite) => {
+      sqlite.prepare("UPDATE menu_items SET name = ?, updated_at = ? WHERE id = ?")
+        .run("동시 변경 메뉴", "2026-07-17T12:00:00.000Z", "menu:1");
+    });
+    const service = createAdminService(db, () => "2026-07-18T00:00:00.000Z", () => "fixed-id");
+    await assert.rejects(
+      () => service.updateMenu("branch:1", "menu:1", menuUpdate, "메뉴 재확인"),
+      /충돌|다시/,
+    );
+    assert.equal(database.prepare("SELECT name FROM menu_items WHERE id = ?").get("menu:1")?.name, "동시 변경 메뉴");
+    assert.equal(database.prepare("SELECT tags FROM menu_profiles WHERE menu_item_id = ?").get("menu:1")?.tags, '["기존"]');
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
+  });
+
+  await context.test("state transition", async () => {
+    const { database, db } = concurrentDatabase((sqlite) => {
+      sqlite.prepare("UPDATE branches SET verification_status = ?, updated_at = ? WHERE id = ?")
+        .run("rejected", "2026-07-17T12:00:00.000Z", "branch:1");
+    });
+    const service = createAdminService(db, () => "2026-07-18T00:00:00.000Z", () => "fixed-id");
+    await assert.rejects(() => service.transitionState("branch:1", {
+      entityType: "branch",
+      verificationStatus: "verified",
+      publicStatus: "active",
+      note: "승인",
+    }), /충돌|다시/);
+    assert.equal(database.prepare("SELECT verification_status FROM branches WHERE id = ?").get("branch:1")?.verification_status, "rejected");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
+  });
 });
 
 test("rejects menu evidence that does not belong to the route branch before batching", async () => {

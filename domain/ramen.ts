@@ -5,6 +5,8 @@ export const verificationStatuses = ["verified", "candidate", "stale", "rejected
 export const publicStatuses = ["active", "hidden", "closed", "moved"] as const;
 export const recommendationModes = ["taste", "balanced", "distance"] as const;
 export const searchRadiiKm = [3, 10, 30] as const;
+export const maxPublicMenusPerBranch = 50;
+export const maxPublicAreas = 200;
 
 export type RamenType = (typeof ramenTypes)[number];
 export type BrothStyle = (typeof brothStyles)[number];

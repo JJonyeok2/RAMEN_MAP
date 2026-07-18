@@ -172,6 +172,59 @@ function profile(row: MenuProfileRow | null) {
   };
 }
 
+function changedRows(result: unknown): number | null {
+  if (typeof result !== "object" || result === null || !("meta" in result)) return null;
+  const { meta } = result;
+  if (typeof meta !== "object" || meta === null || !("changes" in meta)) return null;
+  return typeof meta.changes === "number" && Number.isSafeInteger(meta.changes) && meta.changes >= 0
+    ? meta.changes
+    : null;
+}
+
+function canonicalMenuInput(input: MenuInput): MenuInput {
+  return {
+    name: requiredText(input.name, "메뉴명"),
+    price: input.price,
+    availabilityStatus: input.availabilityStatus,
+    verificationStatus: input.verificationStatus,
+    ramenTypes: [...input.ramenTypes],
+    brothStyle: input.brothStyle,
+    bodyLevel: input.bodyLevel,
+    spicinessLevel: input.spicinessLevel,
+    brothBases: [...input.brothBases],
+    tags: [...input.tags],
+  };
+}
+
+type MenuUpdatePreimage = Pick<
+  MenuItemRow,
+  "name" | "price" | "availability_status" | "verification_status" | "last_verified_at" | "updated_at"
+> & Partial<Pick<
+  MenuProfileRow,
+  "ramen_types" | "broth_style" | "body_level" | "spiciness_level" | "broth_bases" | "tags"
+>>;
+
+function menuSnapshot(
+  menu: {
+    name: string;
+    price: number | null;
+    availabilityStatus: MenuItemRow["availability_status"];
+    verificationStatus: VerificationStatus;
+    lastVerifiedAt: string | null;
+    updatedAt: string;
+  },
+  profileValue: {
+    ramenTypes: string[];
+    brothStyle: string | null;
+    bodyLevel: number | null;
+    spicinessLevel: number | null;
+    brothBases: string[];
+    tags: string[];
+  },
+) {
+  return { ...menu, profile: profileValue };
+}
+
 export function createAdminService(
   db: D1DatabaseLike,
   now: () => string = () => new Date().toISOString(),
@@ -184,12 +237,12 @@ export function createAdminService(
     previousValue?: string | null;
     nextValue?: string | null;
     note: string;
-  }) {
+  }, guard?: { sql: string; bindings: unknown[] }) {
     if (!db.batch) throw new Error("D1 batch 기능이 필요합니다.");
     const audit = db.prepare(`
       INSERT INTO verification_events (
         id, entity_type, entity_id, action, previous_value, next_value, note, actor, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) ${guard ? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (${guard.sql})` : "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"}
     `).bind(
       `event:${newId()}`,
       event.entityType,
@@ -200,8 +253,12 @@ export function createAdminService(
       event.note,
       ADMIN_ACTOR,
       now(),
+      ...(guard?.bindings ?? []),
     );
-    await db.batch([...statements, audit]);
+    const results = await db.batch([...statements, audit]);
+    if (guard && changedRows(results.at(-1)) !== 1) {
+      throw new Error("다른 관리자 변경과 충돌했습니다. 새로고침 후 다시 시도해 주세요.");
+    }
   }
 
   return {
@@ -410,21 +467,23 @@ export function createAdminService(
       const nextValue = JSON.stringify({ ...canonical, updatedAt: timestamp });
       const statements = [
         db.prepare(`UPDATE branches SET branch_name = ?, region = ?, district = ?, address = ?, lat = ?, lng = ?,
-          phone = ?, hours_text = ?, updated_at = ? WHERE id = ?`).bind(
+          phone = ?, hours_text = ?, updated_at = ? WHERE id = ? AND updated_at = ?`).bind(
           canonical.branchName, canonical.region, canonical.district, canonical.address, canonical.lat, canonical.lng,
-          canonical.phone, canonical.hoursText, timestamp, id,
+          canonical.phone, canonical.hoursText, timestamp, id, previousBranch.updated_at,
         ),
-        db.prepare("DELETE FROM opening_hours WHERE branch_id = ?").bind(id),
+        db.prepare(`DELETE FROM opening_hours WHERE branch_id = ?
+          AND EXISTS (SELECT 1 FROM branches WHERE id = ? AND updated_at = ?)`).bind(id, id, timestamp),
         ...canonical.weeklyHours.map((item) => db.prepare(`INSERT INTO opening_hours (
           id, branch_id, weekday, opens_at, closes_at, break_starts_at, break_ends_at, last_order_at, is_closed
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (SELECT 1 FROM branches WHERE id = ? AND updated_at = ?)`).bind(
           `hours:${newId()}`, id, item.weekday, item.opensAt, item.closesAt, item.breakStartsAt,
-          item.breakEndsAt, item.lastOrderAt, item.isClosed ? 1 : 0,
+          item.breakEndsAt, item.lastOrderAt, item.isClosed ? 1 : 0, id, timestamp,
         )),
       ];
       await auditedBatch(statements, {
         entityType: "branch", entityId: id, action: "update_facts", previousValue, nextValue, note: changeNote,
-      });
+      }, { sql: "SELECT 1 FROM branches WHERE id = ? AND updated_at = ?", bindings: [id, timestamp] });
     },
 
     async createMenu(branchId: string, input: MenuInput, reviewerNote: string) {
@@ -456,28 +515,76 @@ export function createAdminService(
       if (!availabilityStatuses.has(input.availabilityStatus) || !verificationStatuses.has(input.verificationStatus)) {
         throw new Error("메뉴 상태를 확인해 주세요.");
       }
-      const owned = await db.prepare("SELECT id FROM menu_items WHERE id = ? AND branch_id = ?")
-        .bind(requiredText(menuId, "메뉴"), branchId).first<{ id: string }>();
-      if (!owned) throw new Error("이 지점에 소속된 메뉴를 찾지 못했습니다.");
+      const canonical = canonicalMenuInput(input);
+      const targetId = requiredText(menuId, "메뉴");
+      const previous = await db.prepare(`SELECT
+          m.name, m.price, m.availability_status, m.verification_status,
+          m.last_verified_at, m.updated_at,
+          p.ramen_types, p.broth_style, p.body_level, p.spiciness_level, p.broth_bases, p.tags
+        FROM menu_items m LEFT JOIN menu_profiles p ON p.menu_item_id = m.id
+        WHERE m.id = ? AND m.branch_id = ?`)
+        .bind(targetId, branchId).first<MenuUpdatePreimage>();
+      if (!previous) throw new Error("이 지점에 소속된 메뉴를 찾지 못했습니다.");
       const timestamp = now();
+      const lastVerifiedAt = canonical.verificationStatus === "verified" ? timestamp : null;
+      const previousValue = JSON.stringify(menuSnapshot({
+        name: previous.name,
+        price: previous.price,
+        availabilityStatus: previous.availability_status,
+        verificationStatus: previous.verification_status,
+        lastVerifiedAt: previous.last_verified_at,
+        updatedAt: previous.updated_at,
+      }, {
+        ramenTypes: parseProfileArray(previous.ramen_types),
+        brothStyle: previous.broth_style ?? null,
+        bodyLevel: previous.body_level ?? null,
+        spicinessLevel: previous.spiciness_level ?? null,
+        brothBases: parseProfileArray(previous.broth_bases),
+        tags: parseProfileArray(previous.tags),
+      }));
+      const nextValue = JSON.stringify(menuSnapshot({
+        name: canonical.name,
+        price: canonical.price,
+        availabilityStatus: canonical.availabilityStatus,
+        verificationStatus: canonical.verificationStatus,
+        lastVerifiedAt,
+        updatedAt: timestamp,
+      }, {
+        ramenTypes: canonical.ramenTypes,
+        brothStyle: canonical.brothStyle,
+        bodyLevel: canonical.bodyLevel,
+        spicinessLevel: canonical.spicinessLevel,
+        brothBases: canonical.brothBases,
+        tags: canonical.tags,
+      }));
       await auditedBatch([
         db.prepare(`UPDATE menu_items SET name = ?, price = ?, availability_status = ?,
           verification_status = ?, last_verified_at = ?, updated_at = ?
-          WHERE id = ? AND branch_id = ?`).bind(
-          requiredText(input.name, "메뉴명"), input.price, input.availabilityStatus, input.verificationStatus,
-          input.verificationStatus === "verified" ? timestamp : null, timestamp, menuId, branchId,
+          WHERE id = ? AND branch_id = ? AND updated_at = ?`).bind(
+          canonical.name, canonical.price, canonical.availabilityStatus, canonical.verificationStatus,
+          lastVerifiedAt, timestamp, targetId, branchId, previous.updated_at,
         ),
         db.prepare(`INSERT INTO menu_profiles (
           menu_item_id, ramen_types, broth_style, body_level, spiciness_level, broth_bases, tags
         ) SELECT ?, ?, ?, ?, ?, ?, ?
-          WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ?)
+          WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?)
         ON CONFLICT(menu_item_id) DO UPDATE SET ramen_types=excluded.ramen_types,
           broth_style=excluded.broth_style, body_level=excluded.body_level,
           spiciness_level=excluded.spiciness_level, broth_bases=excluded.broth_bases, tags=excluded.tags`).bind(
-          menuId, JSON.stringify(input.ramenTypes), input.brothStyle, input.bodyLevel, input.spicinessLevel,
-          JSON.stringify(input.brothBases), JSON.stringify(input.tags), menuId, branchId,
+          targetId, JSON.stringify(canonical.ramenTypes), canonical.brothStyle, canonical.bodyLevel, canonical.spicinessLevel,
+          JSON.stringify(canonical.brothBases), JSON.stringify(canonical.tags), targetId, branchId, timestamp,
         ),
-      ], { entityType: "menu", entityId: menuId, action: "update_menu", nextValue: JSON.stringify(input), note: changeNote });
+      ], {
+        entityType: "menu",
+        entityId: targetId,
+        action: "update_menu",
+        previousValue,
+        nextValue,
+        note: changeNote,
+      }, {
+        sql: "SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?",
+        bindings: [targetId, branchId, timestamp],
+      });
     },
 
     async appendEvidence(branchId: string, input: EvidenceInput, reviewerNote: string) {
@@ -552,7 +659,8 @@ export function createAdminService(
             : previous.last_verified_at,
           updatedAt: timestamp,
         });
-        mutation = db.prepare(`UPDATE branches SET ${assignments.join(", ")} WHERE id = ?`).bind(...values, targetId);
+        mutation = db.prepare(`UPDATE branches SET ${assignments.join(", ")}
+          WHERE id = ? AND updated_at = ?`).bind(...values, targetId, previous.updated_at);
       } else {
         targetId = requiredText(input.entityId ?? "", "메뉴 상태 대상");
         const previous = await db.prepare(`SELECT m.verification_status, m.last_verified_at, m.updated_at
@@ -573,7 +681,7 @@ export function createAdminService(
           updatedAt: timestamp,
         });
         mutation = db.prepare(`UPDATE menu_items SET ${assignments.join(", ")}
-          WHERE id = ? AND branch_id = ?`).bind(...values, targetId, branchId);
+          WHERE id = ? AND branch_id = ? AND updated_at = ?`).bind(...values, targetId, branchId, previous.updated_at);
       }
       await auditedBatch([
         mutation,
@@ -584,6 +692,12 @@ export function createAdminService(
         previousValue,
         nextValue,
         note: reviewerNote,
+      }, input.entityType === "branch" ? {
+        sql: "SELECT 1 FROM branches WHERE id = ? AND updated_at = ?",
+        bindings: [targetId, timestamp],
+      } : {
+        sql: "SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?",
+        bindings: [targetId, branchId, timestamp],
       });
     },
   };

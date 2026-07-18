@@ -2,6 +2,8 @@ import type { RecommendationItem, RecommendationResponse } from "../../domain/re
 import {
   brothBases,
   brothStyles,
+  maxPublicAreas,
+  maxPublicMenusPerBranch,
   ramenTypes,
   type Area,
   type PublicBranchSummary,
@@ -104,7 +106,7 @@ function parseMenu(value: unknown): PublicMenuItem {
 function parseBranch(value: unknown): PublicBranchSummary {
   const input = record(value);
   const verificationStatus = enumValue(input.verificationStatus, verificationStatuses);
-  if (input.publicStatus !== "active" || !Array.isArray(input.menus) || input.menus.length > 50) throw new Error();
+  if (input.publicStatus !== "active" || !Array.isArray(input.menus) || input.menus.length > maxPublicMenusPerBranch) throw new Error();
   const slug = boundedString(input.slug, 100);
   if (!slugPattern.test(slug)) throw new Error();
   const menus = input.menus.map(parseMenu);
@@ -148,7 +150,7 @@ function parseItem(value: unknown, radiusKm: 3 | 10 | 30): RecommendationItem {
 export function parseAreasResponse(value: unknown): Area[] {
   try {
     const input = record(value);
-    if (!Array.isArray(input.areas) || input.areas.length > 200) throw new Error();
+    if (!Array.isArray(input.areas) || input.areas.length > maxPublicAreas) throw new Error();
     const areas = input.areas.map((value): Area => {
       const area = record(value);
       const id = boundedString(area.id, 64);
