@@ -1,4 +1,4 @@
-import type { Coordinates } from "./recommendation";
+import type { Coordinates } from "../domain/recommendation";
 
 export type LocationFailureCode =
   | "unsupported"

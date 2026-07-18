@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
+async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
+    new Request(`http://localhost${pathname}`, {
       headers: { accept: "text/html" },
     }),
     {
@@ -31,42 +31,55 @@ test("server-renders the RAMEN MAP product shell", async () => {
   const html = await response.text();
   assert.match(html, /<html lang="ko"/i);
   assert.match(html, /RAMEN MAP/);
-  assert.match(html, /전국 한 그릇 지도/);
-  assert.match(html, /가게, 메뉴, 취향을 검색해보세요/);
-  assert.match(html, /취향으로 추천받기/);
-  assert.match(html, /DEMO DATA/);
+  assert.match(html, /배고파요/);
+  assert.match(html, /빨리 찾기/);
+  assert.match(html, /라멘 탐방/);
+  assert.match(html, /href="\/nearby"/);
+  assert.match(html, /href="\/explore"/);
+  assert.doesNotMatch(html, /전국 17개 시·도|DEMO DATA|창작 데모/);
+  assert.doesNotMatch(html, /데모 지도|지도.*fallback|dapi\.kakao\.com/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });
 
-test("keeps map integration, filters, and demo data explicit", async () => {
-  const [page, data, styles, layout, packageJson] = await Promise.all([
+test("server-renders the accessible nearby quick-start shell", async () => {
+  const response = await render("/nearby");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<h1[^>]*>배고파요 · 빨리 찾기<\/h1>/);
+  assert.match(html, /<h2>현재 위치에서 시작<\/h2>/);
+  assert.match(html, /<button[^>]*>현재 위치로 3곳 찾기<\/button>/);
+  assert.match(html, /직선거리/);
+  assert.doesNotMatch(html, /dapi\.kakao\.com|DEMO DATA|창작 데모/);
+});
+
+test("keeps the quick flow list-first and explicit about its choices", async () => {
+  const [page, nearby, modeCard, styles, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/ramen-data.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/nearby/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/mode-card.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /dapi\.kakao\.com\/v2\/maps\/sdk\.js/);
-  assert.match(page, /libraries=services,clusterer&autoload=false/);
-  assert.match(page, /NEXT_PUBLIC_KAKAO_MAP_KEY/);
-  assert.match(page, /RAMEN_TYPE_LABELS/);
-  assert.match(page, /BROTH_STYLE_LABELS/);
-  assert.match(page, /대표 메뉴 국물 스타일 필터/);
-  assert.match(page, /느끼한 건 싫어/);
-  assert.match(page, /recommendShops/);
-  assert.match(page, /navigator\.geolocation/);
-  assert.match(page, /내 위치 기반 주변 추천 사용/);
-  assert.match(page, /직선거리/);
-  assert.match(data, /export const RAMEN_SHOPS/);
-  assert.equal((data.match(/id: "demo-/g) ?? []).length, 24);
-  assert.equal((data.match(/brothStyle: "/g) ?? []).length, 24);
-  assert.match(data, /chintan: "청탕"/);
-  assert.match(data, /paitan: "백탕"/);
-  assert.match(styles, /broth-style-badge\.broth-chintan/);
-  assert.match(styles, /broth-style-badge\.broth-paitan/);
-  assert.match(data, /실제 매장 아님/);
-  assert.match(data, /카라이 돈코츠라멘/);
-  assert.match(layout, /og\.png/);
+  assert.match(page, /배고파요 · 빨리 찾기/);
+  assert.match(page, /라멘 탐방/);
+  assert.doesNotMatch(page, /dapi\.kakao\.com|ramen-data|recommendShops/);
+  assert.match(nearby, /3km/);
+  assert.match(nearby, /10km/);
+  assert.match(nearby, /30km/);
+  assert.match(nearby, /현재 위치/);
+  assert.match(nearby, /직선거리/);
+  assert.match(nearby, /taste/);
+  assert.match(nearby, /balanced/);
+  assert.match(nearby, /distance/);
+  assert.match(nearby, /<div className="empty-message">\s*<p>선택할 수 있는 지역이 아직 없어요\. 잠시 뒤 다시 시도해 주세요\.<\/p>\s*<button className="secondary-button"[\s\S]*?지역 다시 불러오기<\/button>\s*<\/div>/);
+  assert.doesNotMatch(nearby, /dapi\.kakao\.com|ramen-data|recommendShops/);
+  assert.match(modeCard, /<h2>\{title\}<\/h2>/);
+  assert.match(styles, /mode-card/);
+  assert.match(styles, /recommendation-card/);
+  assert.doesNotMatch(layout, /og\.png|전국 라멘|라멘 지도/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
