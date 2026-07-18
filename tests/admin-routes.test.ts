@@ -81,7 +81,7 @@ test("admin branch reads are protected as well as writes", async () => {
   assert.equal(databaseReads, 0);
 });
 
-test("authenticated branch evidence ignores a different branch ID supplied in the body", async () => {
+test("rejects a spoofed branch evidence ID before service batching", async () => {
   type Statement = D1Statement & { sql: string; bindings: unknown[] };
   const batches: Statement[][] = [];
   const database: D1DatabaseLike = {
@@ -120,8 +120,52 @@ test("authenticated branch evidence ignores a different branch ID supplied in th
     }),
   }), { params: Promise.resolve({ id: "branch:a" }) });
 
+  assert.equal(response.status, 400);
+  assert.equal(batches.length, 0);
+});
+
+test("branch evidence may omit its ID and persists the route branch in data and audit", async () => {
+  type Statement = D1Statement & { sql: string; bindings: unknown[] };
+  const batches: Statement[][] = [];
+  const database: D1DatabaseLike = {
+    prepare(sql) {
+      const statement: Statement = {
+        sql,
+        bindings: [],
+        bind(...values) { statement.bindings = values; return statement; },
+        async all<T>() { return { results: [] as T[] }; },
+        async first<T>() { return { id: "branch:a" } as T; },
+        async run() { return {}; },
+      };
+      return statement;
+    },
+    async batch(statements) { batches.push(statements as Statement[]); return []; },
+  };
+  const handler = createBranchMutationHandler(
+    async () => ({ ok: true as const, environment: { ADMIN_PASSWORD_HASH: "hash", ADMIN_SESSION_SECRET: "secret" } }),
+    async () => database,
+  );
+  const response = await handler(new Request("http://local/api/admin/branches/branch:a", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "appendEvidence",
+      note: "지점 출처 확인",
+      evidence: {
+        entityType: "branch",
+        fieldName: "address",
+        sourceName: "공식 사이트",
+        sourceUrl: "https://example.com",
+        checkedAt: "2026-07-18",
+        note: "주소 확인",
+      },
+    }),
+  }), { params: Promise.resolve({ id: "branch:a" }) });
+
   assert.equal(response.status, 200);
+  assert.equal(batches.length, 1);
   const evidence = batches[0].find((statement) => /INSERT INTO source_evidence/.test(statement.sql))!;
+  const audit = batches[0].find((statement) => /INSERT INTO verification_events/.test(statement.sql))!;
   assert.ok(evidence.bindings.includes("branch:a"));
-  assert.ok(!evidence.bindings.includes("branch:b"));
+  assert.ok(audit.bindings.includes("branch:a"));
 });

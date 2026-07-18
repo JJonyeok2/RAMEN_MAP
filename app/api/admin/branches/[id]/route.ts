@@ -35,6 +35,12 @@ export function createBranchMutationHandler(authorize: Authorize = requireAdminS
     try {
       const body = input as Record<string, unknown>;
       const { id } = await context.params;
+      if (body.action === "appendEvidence") {
+        const evidence = body.evidence as Record<string, unknown>;
+        if (evidence.entityType === "branch" && evidence.entityId !== undefined && evidence.entityId !== id) {
+          return json({ error: "지점 근거 대상이 요청 경로와 일치하지 않습니다." }, 400);
+        }
+      }
       const service = createAdminService(await loadDatabase());
       if (body.action === "updateBranch") {
         await service.updateBranch(id, body.branch as Parameters<typeof service.updateBranch>[1], String(body.note ?? ""));
