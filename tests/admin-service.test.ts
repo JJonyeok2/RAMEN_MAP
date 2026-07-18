@@ -5,7 +5,7 @@ import { createAdminService } from "../features/admin/admin-service.ts";
 
 type CapturedStatement = D1Statement & { sql: string; bindings: unknown[] };
 
-function capturedDatabase() {
+function capturedDatabase(firstResult?: (statement: CapturedStatement) => unknown) {
   const batches: CapturedStatement[][] = [];
   const db: D1DatabaseLike = {
     prepare(sql) {
@@ -17,7 +17,7 @@ function capturedDatabase() {
           return statement;
         },
         async all<T>() { return { results: [] as T[] }; },
-        async first<T>() { return null as T | null; },
+        async first<T>() { return (firstResult?.(statement) ?? null) as T | null; },
         async run() { return {}; },
       };
       return statement;
@@ -75,7 +75,7 @@ test("state transitions require a reviewer note before touching D1", async () =>
 test("rejects evidence outside the normalized branch and menu entity types", async () => {
   const { db, batches } = capturedDatabase();
   const service = createAdminService(db);
-  await assert.rejects(() => service.appendEvidence({
+  await assert.rejects(() => service.appendEvidence("branch:1", {
     entityType: "shop" as "branch",
     entityId: "shop:1",
     fieldName: "general",
@@ -84,5 +84,43 @@ test("rejects evidence outside the normalized branch and menu entity types", asy
     checkedAt: "2026-07-18",
     note: "",
   }, "출처 확인"), /근거 대상/);
+  assert.equal(batches.length, 0);
+});
+
+const menuUpdate = {
+  name: "시오 라멘",
+  price: 12_000,
+  availabilityStatus: "available" as const,
+  verificationStatus: "verified" as const,
+  ramenTypes: ["shio"],
+  brothStyle: "chintan",
+  bodyLevel: 2,
+  spicinessLevel: 0,
+  brothBases: ["닭"],
+  tags: ["깔끔"],
+};
+
+test("rejects updating a menu that does not belong to the route branch before batching", async () => {
+  const { db, batches } = capturedDatabase(() => null);
+  const service = createAdminService(db);
+  await assert.rejects(
+    () => service.updateMenu("branch:a", "menu:branch-b", menuUpdate, "메뉴 재확인"),
+    /소속/,
+  );
+  assert.equal(batches.length, 0);
+});
+
+test("rejects menu evidence that does not belong to the route branch before batching", async () => {
+  const { db, batches } = capturedDatabase(() => null);
+  const service = createAdminService(db);
+  await assert.rejects(() => service.appendEvidence("branch:a", {
+    entityType: "menu",
+    entityId: "menu:branch-b",
+    fieldName: "price",
+    sourceName: "공식 사이트",
+    sourceUrl: "https://example.com",
+    checkedAt: "2026-07-18",
+    note: "가격 확인",
+  }, "출처 확인"), /소속/);
   assert.equal(batches.length, 0);
 });

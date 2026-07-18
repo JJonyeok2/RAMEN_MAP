@@ -47,7 +47,6 @@ export type BranchUpdateInput = {
 };
 
 export type MenuInput = {
-  id?: string;
   name: string;
   price: number | null;
   availabilityStatus: MenuItemRow["availability_status"];
@@ -255,50 +254,82 @@ export function createAdminService(
       await auditedBatch(statements, { entityType: "branch", entityId: id, action: "update_facts", nextValue, note: changeNote });
     },
 
-    async saveMenu(branchId: string, input: MenuInput, reviewerNote: string) {
+    async createMenu(branchId: string, input: MenuInput, reviewerNote: string) {
       const changeNote = note(reviewerNote);
       if (!availabilityStatuses.has(input.availabilityStatus) || !verificationStatuses.has(input.verificationStatus)) {
         throw new Error("메뉴 상태를 확인해 주세요.");
       }
-      const menuId = input.id || `menu:${newId()}`;
+      const menuId = `menu:${newId()}`;
       const timestamp = now();
       await auditedBatch([
         db.prepare(`INSERT INTO menu_items (
           id, branch_id, name, price, availability_status, verification_status, last_verified_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name, price=excluded.price,
-          availability_status=excluded.availability_status, verification_status=excluded.verification_status,
-          last_verified_at=excluded.last_verified_at, updated_at=excluded.updated_at`).bind(
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(
           menuId, branchId, requiredText(input.name, "메뉴명"), input.price, input.availabilityStatus,
           input.verificationStatus, input.verificationStatus === "verified" ? timestamp : null, timestamp,
         ),
         db.prepare(`INSERT INTO menu_profiles (
           menu_item_id, ramen_types, broth_style, body_level, spiciness_level, broth_bases, tags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
+          menuId, JSON.stringify(input.ramenTypes), input.brothStyle, input.bodyLevel, input.spicinessLevel,
+          JSON.stringify(input.brothBases), JSON.stringify(input.tags),
+        ),
+      ], { entityType: "menu", entityId: menuId, action: "create_menu", nextValue: JSON.stringify(input), note: changeNote });
+      return menuId;
+    },
+
+    async updateMenu(branchId: string, menuId: string, input: MenuInput, reviewerNote: string) {
+      const changeNote = note(reviewerNote);
+      if (!availabilityStatuses.has(input.availabilityStatus) || !verificationStatuses.has(input.verificationStatus)) {
+        throw new Error("메뉴 상태를 확인해 주세요.");
+      }
+      const owned = await db.prepare("SELECT id FROM menu_items WHERE id = ? AND branch_id = ?")
+        .bind(requiredText(menuId, "메뉴"), branchId).first<{ id: string }>();
+      if (!owned) throw new Error("이 지점에 소속된 메뉴를 찾지 못했습니다.");
+      const timestamp = now();
+      await auditedBatch([
+        db.prepare(`UPDATE menu_items SET name = ?, price = ?, availability_status = ?,
+          verification_status = ?, last_verified_at = ?, updated_at = ?
+          WHERE id = ? AND branch_id = ?`).bind(
+          requiredText(input.name, "메뉴명"), input.price, input.availabilityStatus, input.verificationStatus,
+          input.verificationStatus === "verified" ? timestamp : null, timestamp, menuId, branchId,
+        ),
+        db.prepare(`INSERT INTO menu_profiles (
+          menu_item_id, ramen_types, broth_style, body_level, spiciness_level, broth_bases, tags
+        ) SELECT ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ?)
         ON CONFLICT(menu_item_id) DO UPDATE SET ramen_types=excluded.ramen_types,
           broth_style=excluded.broth_style, body_level=excluded.body_level,
           spiciness_level=excluded.spiciness_level, broth_bases=excluded.broth_bases, tags=excluded.tags`).bind(
           menuId, JSON.stringify(input.ramenTypes), input.brothStyle, input.bodyLevel, input.spicinessLevel,
-          JSON.stringify(input.brothBases), JSON.stringify(input.tags),
+          JSON.stringify(input.brothBases), JSON.stringify(input.tags), menuId, branchId,
         ),
-      ], { entityType: "menu", entityId: menuId, action: input.id ? "update_menu" : "create_menu", nextValue: JSON.stringify(input), note: changeNote });
-      return menuId;
+      ], { entityType: "menu", entityId: menuId, action: "update_menu", nextValue: JSON.stringify(input), note: changeNote });
     },
 
-    async appendEvidence(input: EvidenceInput, reviewerNote: string) {
+    async appendEvidence(branchId: string, input: EvidenceInput, reviewerNote: string) {
       const changeNote = note(reviewerNote);
       if (input.entityType !== "branch" && input.entityType !== "menu") throw new Error("근거 대상을 확인해 주세요.");
-      requiredText(input.entityId, "근거 대상");
+      let targetId = branchId;
+      if (input.entityType === "branch") {
+        const branch = await db.prepare("SELECT id FROM branches WHERE id = ?").bind(branchId).first<{ id: string }>();
+        if (!branch) throw new Error("지점 근거 대상을 찾지 못했습니다.");
+      } else {
+        targetId = requiredText(input.entityId, "메뉴 근거 대상");
+        const menu = await db.prepare("SELECT id FROM menu_items WHERE id = ? AND branch_id = ?")
+          .bind(targetId, branchId).first<{ id: string }>();
+        if (!menu) throw new Error("이 지점에 소속된 메뉴 근거 대상을 찾지 못했습니다.");
+      }
       const evidenceId = `evidence:${newId()}`;
       await auditedBatch([
         db.prepare(`INSERT INTO source_evidence (
           id, entity_type, entity_id, field_name, source_name, source_url, checked_at, note, collected_by
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-          evidenceId, input.entityType, input.entityId, requiredText(input.fieldName, "근거 필드"),
+          evidenceId, input.entityType, targetId, requiredText(input.fieldName, "근거 필드"),
           requiredText(input.sourceName, "출처명"), requiredText(input.sourceUrl, "출처 URL"),
           requiredText(input.checkedAt, "확인일"), input.note.trim(), ADMIN_ACTOR,
         ),
-      ], { entityType: input.entityType, entityId: input.entityId, action: "append_evidence", nextValue: JSON.stringify({ ...input, id: evidenceId }), note: changeNote });
+      ], { entityType: input.entityType, entityId: targetId, action: "append_evidence", nextValue: JSON.stringify({ ...input, entityId: targetId, id: evidenceId }), note: changeNote });
       return evidenceId;
     },
 

@@ -38,10 +38,20 @@ export function createBranchMutationHandler(authorize: Authorize = requireAdminS
       const service = createAdminService(await loadDatabase());
       if (body.action === "updateBranch") {
         await service.updateBranch(id, body.branch as Parameters<typeof service.updateBranch>[1], String(body.note ?? ""));
-      } else if (body.action === "saveMenu") {
-        await service.saveMenu(id, body.menu as Parameters<typeof service.saveMenu>[1], String(body.note ?? ""));
+      } else if (body.action === "createMenu") {
+        const menu = { ...(body.menu as Record<string, unknown>) };
+        delete menu.id;
+        await service.createMenu(id, menu as Parameters<typeof service.createMenu>[1], String(body.note ?? ""));
+      } else if (body.action === "updateMenu") {
+        const menu = { ...(body.menu as Record<string, unknown>) };
+        delete menu.id;
+        await service.updateMenu(id, String(body.menuId ?? ""), menu as Parameters<typeof service.updateMenu>[2], String(body.note ?? ""));
       } else if (body.action === "appendEvidence") {
-        await service.appendEvidence(body.evidence as Parameters<typeof service.appendEvidence>[0], String(body.note ?? ""));
+        const evidence = body.evidence as Record<string, unknown>;
+        await service.appendEvidence(id, {
+          ...evidence,
+          entityId: evidence.entityType === "branch" ? id : evidence.entityId,
+        } as Parameters<typeof service.appendEvidence>[1], String(body.note ?? ""));
       } else if (body.action === "transitionState") {
         const transition = body.transition as Omit<Parameters<typeof service.transitionState>[0], "entityId">;
         await service.transitionState({ ...transition, entityId: id });

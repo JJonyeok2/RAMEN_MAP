@@ -86,7 +86,7 @@ export function AdminBranchEditor({ branch }: { branch: AdminBranchDetail }) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     void send({
-      action: "saveMenu", note: data.get("note"),
+      action: id ? "updateMenu" : "createMenu", menuId: id, note: data.get("note"),
       menu: {
         id, name: data.get("name"), price: nullableNumber(data.get("price")),
         availabilityStatus: data.get("availabilityStatus"), verificationStatus: data.get("verificationStatus"),
