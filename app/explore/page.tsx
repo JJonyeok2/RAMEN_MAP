@@ -76,11 +76,13 @@ export default function ExplorePage() {
   const [selectionError, setSelectionError] = useState("");
   const [state, setState] = useState<SearchState>({ status: "idle" });
   const areaCoordinatorRef = useRef<RequestCoordinator | null>(null);
-  const searchCoordinatorRef = useRef<RequestCoordinator | null>(null);
+  const locationCoordinatorRef = useRef<RequestCoordinator | null>(null);
+  const recommendationCoordinatorRef = useRef<RequestCoordinator | null>(null);
   const eventEmitterRef = useRef<ReturnType<typeof createProductEventEmitter> | null>(null);
 
   const areaCoordinator = () => (areaCoordinatorRef.current ??= new RequestCoordinator());
-  const searchCoordinator = () => (searchCoordinatorRef.current ??= new RequestCoordinator());
+  const locationCoordinator = () => (locationCoordinatorRef.current ??= new RequestCoordinator());
+  const recommendationCoordinator = () => (recommendationCoordinatorRef.current ??= new RequestCoordinator());
 
   const emitEvent = (
     eventType: "recommendation_shown" | "shop_selected" | "directions_clicked",
@@ -131,29 +133,47 @@ export default function ExplorePage() {
       });
     return () => {
       mountedAreaCoordinator.dispose();
-      searchCoordinatorRef.current?.dispose();
+      locationCoordinatorRef.current?.dispose();
+      recommendationCoordinatorRef.current?.dispose();
       if (areaCoordinatorRef.current === mountedAreaCoordinator) areaCoordinatorRef.current = null;
-      searchCoordinatorRef.current = null;
+      locationCoordinatorRef.current = null;
+      recommendationCoordinatorRef.current = null;
     };
   }, []);
 
+  const supersedeRecommendation = () => {
+    recommendationCoordinator().begin();
+    setState({ status: "idle" });
+  };
+
+  const selectAreaOrigin = (areaId: string) => {
+    locationCoordinator().begin();
+    setLocating(false);
+    setSelectedAreaId(areaId);
+    setLocationOrigin(null);
+    setLocationMessage("");
+    setSelectionError("");
+    supersedeRecommendation();
+  };
+
   const chooseCurrentLocation = async () => {
-    const request = searchCoordinator().begin();
+    const request = locationCoordinator().begin();
     setLocating(true);
     setLocationMessage("");
     setSelectionError("");
     try {
       const origin = await requestRadiusSearchOrigin(navigator.geolocation);
-      if (!searchCoordinator().isCurrent(request.token)) return;
+      if (!locationCoordinator().isCurrent(request.token)) return;
+      supersedeRecommendation();
       setLocationOrigin(origin);
       setSelectedAreaId("");
       setLocationMessage("현재 위치를 추천 기준으로 사용할게요.");
     } catch (error) {
-      if (!searchCoordinator().isCurrent(request.token)) return;
+      if (!locationCoordinator().isCurrent(request.token)) return;
       setLocationOrigin(null);
       setLocationMessage(locationFallbackMessage(error));
     } finally {
-      if (searchCoordinator().isCurrent(request.token)) setLocating(false);
+      if (locationCoordinator().isCurrent(request.token)) setLocating(false);
     }
   };
 
@@ -169,7 +189,7 @@ export default function ExplorePage() {
 
     const areaId = selectedArea?.id ?? null;
     const startedAt = monotonicNow();
-    const request = searchCoordinator().begin();
+    const request = recommendationCoordinator().begin();
     setSelectionError("");
     setState({ status: "loading" });
     try {
@@ -192,10 +212,10 @@ export default function ExplorePage() {
         }),
       });
       const body = await readJson(response);
-      if (!searchCoordinator().isCurrent(request.token)) return;
+      if (!recommendationCoordinator().isCurrent(request.token)) return;
       if (!response.ok) throw new Error(parsePublicError(body, "추천을 불러오지 못했어요."));
       const result = parseRecommendationResponse(body);
-      if (!searchCoordinator().isCurrent(request.token)) return;
+      if (!recommendationCoordinator().isCurrent(request.token)) return;
       const context = { startedAt, areaId };
       setState({ status: "results", result, context });
       emitEvent("recommendation_shown", {
@@ -204,7 +224,7 @@ export default function ExplorePage() {
         radiusKm: result.radiusKm,
       });
     } catch (error) {
-      if (!searchCoordinator().isCurrent(request.token)) return;
+      if (!recommendationCoordinator().isCurrent(request.token)) return;
       setState({
         status: "error",
         message: error instanceof Error ? error.message : "추천을 불러오지 못했어요.",
@@ -257,14 +277,7 @@ export default function ExplorePage() {
                 id="explore-area"
                 value={selectedAreaId}
                 disabled={areasLoading || Boolean(areaError)}
-                onChange={(event) => {
-                  setSelectedAreaId(event.target.value);
-                  if (event.target.value) {
-                    setLocationOrigin(null);
-                    setLocationMessage("");
-                  }
-                  setSelectionError("");
-                }}
+                onChange={(event) => selectAreaOrigin(event.target.value)}
               >
                 <option value="">{areasLoading ? "지역 불러오는 중…" : "지역을 골라 주세요"}</option>
                 {areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
