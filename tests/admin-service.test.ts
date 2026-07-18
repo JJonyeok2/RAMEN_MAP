@@ -163,7 +163,7 @@ test("updates branch facts and weekly hours with an audit event in one D1 batch"
 
   assert.equal(batches.length, 1);
   assert.equal(batches[0].length, 4);
-  const audit = batches[0].at(-1)!;
+  const audit = batches[0].find((statement) => /INSERT INTO verification_events/.test(statement.sql))!;
   assert.match(audit.sql, /INSERT INTO verification_events/);
   assert.ok(audit.bindings.includes("RAMEN MAP 운영자"));
   assert.ok(audit.bindings.includes("공식 채널 재확인"));
@@ -224,7 +224,7 @@ test("audits exact canonical before and after branch snapshots", async () => {
     }],
   }, "공식 채널 재확인");
 
-  const audit = batches[0].at(-1)!;
+  const audit = batches[0].find((statement) => /INSERT INTO verification_events/.test(statement.sql))!;
   assert.deepEqual(JSON.parse(String(audit.bindings[4])), {
     branchName: "구 본점",
     region: "서울",
@@ -305,7 +305,7 @@ test("audits exact canonical before and after state snapshots", async () => {
     note: "승인",
   });
 
-  const audit = batches[0].at(-1)!;
+  const audit = batches[0].find((statement) => /INSERT INTO verification_events/.test(statement.sql))!;
   assert.deepEqual(JSON.parse(String(audit.bindings[4])), {
     verificationStatus: "candidate",
     publicStatus: "hidden",
@@ -395,7 +395,8 @@ test("audits exact canonical before and after menu snapshots", async () => {
 
   await service.updateMenu("branch:1", "menu:1", { ...menuUpdate, name: "  새 시오  " }, "메뉴 재확인");
 
-  const [menuMutation, , audit] = batches[0];
+  const menuMutation = batches[0].find((statement) => /UPDATE menu_items/.test(statement.sql))!;
+  const audit = batches[0].find((statement) => /INSERT INTO verification_events/.test(statement.sql))!;
   assert.match(menuMutation.sql, /WHERE id = \? AND branch_id = \? AND updated_at = \?/);
   assert.deepEqual(JSON.parse(String(audit.bindings[4])), {
     name: "기존 시오",
@@ -484,6 +485,87 @@ test("stale revisions reject branch, menu, and state writes without misleading a
     assert.equal(database.prepare("SELECT verification_status FROM branches WHERE id = ?").get("branch:1")?.verification_status, "rejected");
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
   });
+});
+
+const collidingTimestamp = "2026-07-18T00:00:00.000Z";
+
+test("same-timestamp branch fact collision preserves concurrent facts and hours without an audit", async () => {
+  const { database, db } = concurrentDatabase((sqlite) => {
+    sqlite.prepare("UPDATE branches SET address = ?, updated_at = ? WHERE id = ?")
+      .run("동시 변경 주소", collidingTimestamp, "branch:1");
+  });
+  const service = createAdminService(db, () => collidingTimestamp, () => "fixed-id");
+
+  await assert.rejects(() => service.updateBranch("branch:1", {
+    branchName: "본점",
+    region: "서울",
+    district: "마포구",
+    address: "내 변경 주소",
+    lat: 37.5,
+    lng: 126.9,
+    phone: null,
+    hoursText: null,
+    weeklyHours: [],
+  }, "지점 재확인"), /충돌|다시/);
+
+  assert.equal(database.prepare("SELECT address FROM branches WHERE id = ?").get("branch:1")?.address, "동시 변경 주소");
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM opening_hours").get()?.count, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
+});
+
+test("same-timestamp menu fact collision preserves concurrent menu and profile without an audit", async () => {
+  const { database, db } = concurrentDatabase((sqlite) => {
+    sqlite.prepare("UPDATE menu_items SET name = ?, updated_at = ? WHERE id = ?")
+      .run("동시 변경 메뉴", collidingTimestamp, "menu:1");
+  });
+  const service = createAdminService(db, () => collidingTimestamp, () => "fixed-id");
+
+  await assert.rejects(
+    () => service.updateMenu("branch:1", "menu:1", menuUpdate, "메뉴 재확인"),
+    /충돌|다시/,
+  );
+
+  assert.equal(database.prepare("SELECT name FROM menu_items WHERE id = ?").get("menu:1")?.name, "동시 변경 메뉴");
+  assert.equal(database.prepare("SELECT tags FROM menu_profiles WHERE menu_item_id = ?").get("menu:1")?.tags, '["기존"]');
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
+});
+
+test("same-timestamp branch state collision preserves concurrent state without an audit", async () => {
+  const { database, db } = concurrentDatabase((sqlite) => {
+    sqlite.prepare("UPDATE branches SET verification_status = ?, updated_at = ? WHERE id = ?")
+      .run("rejected", collidingTimestamp, "branch:1");
+  });
+  const service = createAdminService(db, () => collidingTimestamp, () => "fixed-id");
+
+  await assert.rejects(() => service.transitionState("branch:1", {
+    entityType: "branch",
+    verificationStatus: "verified",
+    publicStatus: "active",
+    note: "승인",
+  }), /충돌|다시/);
+
+  assert.equal(database.prepare("SELECT verification_status FROM branches WHERE id = ?").get("branch:1")?.verification_status, "rejected");
+  assert.equal(database.prepare("SELECT public_status FROM branches WHERE id = ?").get("branch:1")?.public_status, "hidden");
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
+});
+
+test("same-timestamp menu state collision preserves concurrent state and profile without an audit", async () => {
+  const { database, db } = concurrentDatabase((sqlite) => {
+    sqlite.prepare("UPDATE menu_items SET verification_status = ?, updated_at = ? WHERE id = ?")
+      .run("rejected", collidingTimestamp, "menu:1");
+  });
+  const service = createAdminService(db, () => collidingTimestamp, () => "fixed-id");
+
+  await assert.rejects(() => service.transitionState("branch:1", {
+    entityType: "menu",
+    entityId: "menu:1",
+    verificationStatus: "verified",
+    note: "승인",
+  }), /충돌|다시/);
+
+  assert.equal(database.prepare("SELECT verification_status FROM menu_items WHERE id = ?").get("menu:1")?.verification_status, "rejected");
+  assert.equal(database.prepare("SELECT tags FROM menu_profiles WHERE menu_item_id = ?").get("menu:1")?.tags, '["기존"]');
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM verification_events").get()?.count, 0);
 });
 
 test("rejects menu evidence that does not belong to the route branch before batching", async () => {

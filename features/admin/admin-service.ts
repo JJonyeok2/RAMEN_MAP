@@ -237,14 +237,15 @@ export function createAdminService(
     previousValue?: string | null;
     nextValue?: string | null;
     note: string;
-  }, guard?: { sql: string; bindings: unknown[] }) {
+  }, guard?: { eventId: string; sql: string; bindings: unknown[] }) {
     if (!db.batch) throw new Error("D1 batch 기능이 필요합니다.");
+    const eventId = guard?.eventId ?? `event:${newId()}`;
     const audit = db.prepare(`
       INSERT INTO verification_events (
         id, entity_type, entity_id, action, previous_value, next_value, note, actor, created_at
       ) ${guard ? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (${guard.sql})` : "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"}
     `).bind(
-      `event:${newId()}`,
+      eventId,
       event.entityType,
       event.entityId,
       event.action,
@@ -255,8 +256,8 @@ export function createAdminService(
       now(),
       ...(guard?.bindings ?? []),
     );
-    const results = await db.batch([...statements, audit]);
-    if (guard && changedRows(results.at(-1)) !== 1) {
+    const results = await db.batch(guard ? [audit, ...statements] : [...statements, audit]);
+    if (guard && changedRows(results[0]) !== 1) {
       throw new Error("다른 관리자 변경과 충돌했습니다. 새로고침 후 다시 시도해 주세요.");
     }
   }
@@ -464,26 +465,36 @@ export function createAdminService(
         updatedAt: previousBranch.updated_at,
       });
       const timestamp = now();
+      const mutationEventId = `event:${newId()}`;
       const nextValue = JSON.stringify({ ...canonical, updatedAt: timestamp });
       const statements = [
         db.prepare(`UPDATE branches SET branch_name = ?, region = ?, district = ?, address = ?, lat = ?, lng = ?,
-          phone = ?, hours_text = ?, updated_at = ? WHERE id = ? AND updated_at = ?`).bind(
+          phone = ?, hours_text = ?, updated_at = ? WHERE id = ? AND updated_at = ?
+          AND EXISTS (SELECT 1 FROM verification_events WHERE id = ?)`).bind(
           canonical.branchName, canonical.region, canonical.district, canonical.address, canonical.lat, canonical.lng,
-          canonical.phone, canonical.hoursText, timestamp, id, previousBranch.updated_at,
+          canonical.phone, canonical.hoursText, timestamp, id, previousBranch.updated_at, mutationEventId,
         ),
         db.prepare(`DELETE FROM opening_hours WHERE branch_id = ?
-          AND EXISTS (SELECT 1 FROM branches WHERE id = ? AND updated_at = ?)`).bind(id, id, timestamp),
+          AND EXISTS (SELECT 1 FROM verification_events WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM branches WHERE id = ? AND updated_at = ?)`).bind(
+          id, mutationEventId, id, timestamp,
+        ),
         ...canonical.weeklyHours.map((item) => db.prepare(`INSERT INTO opening_hours (
           id, branch_id, weekday, opens_at, closes_at, break_starts_at, break_ends_at, last_order_at, is_closed
         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-          WHERE EXISTS (SELECT 1 FROM branches WHERE id = ? AND updated_at = ?)`).bind(
+          WHERE EXISTS (SELECT 1 FROM verification_events WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM branches WHERE id = ? AND updated_at = ?)`).bind(
           `hours:${newId()}`, id, item.weekday, item.opensAt, item.closesAt, item.breakStartsAt,
-          item.breakEndsAt, item.lastOrderAt, item.isClosed ? 1 : 0, id, timestamp,
+          item.breakEndsAt, item.lastOrderAt, item.isClosed ? 1 : 0, mutationEventId, id, timestamp,
         )),
       ];
       await auditedBatch(statements, {
         entityType: "branch", entityId: id, action: "update_facts", previousValue, nextValue, note: changeNote,
-      }, { sql: "SELECT 1 FROM branches WHERE id = ? AND updated_at = ?", bindings: [id, timestamp] });
+      }, {
+        eventId: mutationEventId,
+        sql: "SELECT 1 FROM branches WHERE id = ? AND updated_at = ?",
+        bindings: [id, previousBranch.updated_at],
+      });
     },
 
     async createMenu(branchId: string, input: MenuInput, reviewerNote: string) {
@@ -526,6 +537,7 @@ export function createAdminService(
         .bind(targetId, branchId).first<MenuUpdatePreimage>();
       if (!previous) throw new Error("이 지점에 소속된 메뉴를 찾지 못했습니다.");
       const timestamp = now();
+      const mutationEventId = `event:${newId()}`;
       const lastVerifiedAt = canonical.verificationStatus === "verified" ? timestamp : null;
       const previousValue = JSON.stringify(menuSnapshot({
         name: previous.name,
@@ -560,19 +572,21 @@ export function createAdminService(
       await auditedBatch([
         db.prepare(`UPDATE menu_items SET name = ?, price = ?, availability_status = ?,
           verification_status = ?, last_verified_at = ?, updated_at = ?
-          WHERE id = ? AND branch_id = ? AND updated_at = ?`).bind(
+          WHERE id = ? AND branch_id = ? AND updated_at = ?
+          AND EXISTS (SELECT 1 FROM verification_events WHERE id = ?)`).bind(
           canonical.name, canonical.price, canonical.availabilityStatus, canonical.verificationStatus,
-          lastVerifiedAt, timestamp, targetId, branchId, previous.updated_at,
+          lastVerifiedAt, timestamp, targetId, branchId, previous.updated_at, mutationEventId,
         ),
         db.prepare(`INSERT INTO menu_profiles (
           menu_item_id, ramen_types, broth_style, body_level, spiciness_level, broth_bases, tags
         ) SELECT ?, ?, ?, ?, ?, ?, ?
-          WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?)
+          WHERE EXISTS (SELECT 1 FROM verification_events WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?)
         ON CONFLICT(menu_item_id) DO UPDATE SET ramen_types=excluded.ramen_types,
           broth_style=excluded.broth_style, body_level=excluded.body_level,
           spiciness_level=excluded.spiciness_level, broth_bases=excluded.broth_bases, tags=excluded.tags`).bind(
           targetId, JSON.stringify(canonical.ramenTypes), canonical.brothStyle, canonical.bodyLevel, canonical.spicinessLevel,
-          JSON.stringify(canonical.brothBases), JSON.stringify(canonical.tags), targetId, branchId, timestamp,
+          JSON.stringify(canonical.brothBases), JSON.stringify(canonical.tags), mutationEventId, targetId, branchId, timestamp,
         ),
       ], {
         entityType: "menu",
@@ -582,8 +596,9 @@ export function createAdminService(
         nextValue,
         note: changeNote,
       }, {
+        eventId: mutationEventId,
         sql: "SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?",
-        bindings: [targetId, branchId, timestamp],
+        bindings: [targetId, branchId, previous.updated_at],
       });
     },
 
@@ -636,7 +651,9 @@ export function createAdminService(
       let targetId: string;
       let previousValue: string;
       let nextValue: string;
+      let previousUpdatedAt: string;
       let mutation: D1Statement;
+      const mutationEventId = `event:${newId()}`;
       if (input.entityType === "branch") {
         targetId = branchId;
         if (input.entityId && input.entityId !== branchId) throw new Error("지점 상태 대상을 찾지 못했습니다.");
@@ -645,6 +662,7 @@ export function createAdminService(
             BranchRow, "verification_status" | "public_status" | "last_verified_at" | "updated_at"
           >>();
         if (!previous) throw new Error("상태를 변경할 지점을 찾지 못했습니다.");
+        previousUpdatedAt = previous.updated_at;
         previousValue = JSON.stringify({
           verificationStatus: previous.verification_status,
           publicStatus: previous.public_status,
@@ -660,7 +678,10 @@ export function createAdminService(
           updatedAt: timestamp,
         });
         mutation = db.prepare(`UPDATE branches SET ${assignments.join(", ")}
-          WHERE id = ? AND updated_at = ?`).bind(...values, targetId, previous.updated_at);
+          WHERE id = ? AND updated_at = ?
+          AND EXISTS (SELECT 1 FROM verification_events WHERE id = ?)`).bind(
+          ...values, targetId, previous.updated_at, mutationEventId,
+        );
       } else {
         targetId = requiredText(input.entityId ?? "", "메뉴 상태 대상");
         const previous = await db.prepare(`SELECT m.verification_status, m.last_verified_at, m.updated_at
@@ -668,6 +689,7 @@ export function createAdminService(
             MenuItemRow, "verification_status" | "last_verified_at" | "updated_at"
           >>();
         if (!previous) throw new Error("이 지점에 소속된 상태 변경 메뉴를 찾지 못했습니다.");
+        previousUpdatedAt = previous.updated_at;
         previousValue = JSON.stringify({
           verificationStatus: previous.verification_status,
           lastVerifiedAt: previous.last_verified_at,
@@ -681,7 +703,10 @@ export function createAdminService(
           updatedAt: timestamp,
         });
         mutation = db.prepare(`UPDATE menu_items SET ${assignments.join(", ")}
-          WHERE id = ? AND branch_id = ? AND updated_at = ?`).bind(...values, targetId, branchId, previous.updated_at);
+          WHERE id = ? AND branch_id = ? AND updated_at = ?
+          AND EXISTS (SELECT 1 FROM verification_events WHERE id = ?)`).bind(
+          ...values, targetId, branchId, previous.updated_at, mutationEventId,
+        );
       }
       await auditedBatch([
         mutation,
@@ -693,11 +718,13 @@ export function createAdminService(
         nextValue,
         note: reviewerNote,
       }, input.entityType === "branch" ? {
+        eventId: mutationEventId,
         sql: "SELECT 1 FROM branches WHERE id = ? AND updated_at = ?",
-        bindings: [targetId, timestamp],
+        bindings: [targetId, previousUpdatedAt],
       } : {
+        eventId: mutationEventId,
         sql: "SELECT 1 FROM menu_items WHERE id = ? AND branch_id = ? AND updated_at = ?",
-        bindings: [targetId, branchId, timestamp],
+        bindings: [targetId, branchId, previousUpdatedAt],
       });
     },
   };
