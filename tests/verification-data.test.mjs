@@ -17,12 +17,13 @@ test("packages a D1 migration with the eight requested verification candidates",
   }
 });
 
-test("connects verification status to the public nearby flow and recommendation data", async () => {
-  const [home, nearby, clientEvents, verificationPage, recommendationApi] = await Promise.all([
+test("connects public verification status to discovery and keeps administration private", async () => {
+  const [home, nearby, clientEvents, legacyVerifyPage, adminPage, recommendationApi] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/nearby/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/analytics/client-events.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/verify/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/admin/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v1/recommendations/route.ts", import.meta.url), "utf8"),
   ]);
 
@@ -32,8 +33,12 @@ test("connects verification status to the public nearby flow and recommendation 
   assert.match(nearby, /createProductEventEmitter/);
   assert.match(clientEvents, /fetch\("\/api\/v1\/events"/);
   assert.match(nearby, /verificationStatus: item\.branch\.verificationStatus/);
-  assert.match(verificationPage, /검증 완료/);
-  assert.match(verificationPage, /검증 완료.*지도와 챗봇에 반영됩니다/);
+  assert.doesNotMatch(home, /href=["']\/(?:admin|verify)/);
+  assert.match(legacyVerifyPage, /redirect\("\/admin"\)/);
+  assert.match(adminPage, /검증 완료/);
+  assert.match(adminPage, /검증 후보/);
+  assert.match(adminPage, /재검증 필요/);
+  assert.match(adminPage, /폐점/);
   assert.match(recommendationApi, /createD1ShopRepository/);
   assert.doesNotMatch(recommendationApi, /listVerifiedShops|RAMEN_SHOPS/);
 });

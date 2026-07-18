@@ -11,6 +11,7 @@ export interface D1Statement {
 
 export interface D1DatabaseLike {
   prepare(sql: string): D1Statement;
+  batch?(statements: D1Statement[]): Promise<unknown[]>;
 }
 
 export async function getD1(): Promise<D1DatabaseLike> {
