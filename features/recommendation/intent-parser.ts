@@ -78,6 +78,7 @@ export function parseTasteIntent(text: string, selections: PreferenceSelections)
     ramenTypes: unique(selections.ramenTypes ?? []),
     brothStyles: unique(selections.brothStyles ?? []),
     brothBases: unique(selections.brothBases ?? []),
+    excludedBrothBases: [],
     bodyTarget: selections.bodyTarget ?? null,
     spicinessTarget: selections.spicinessTarget ?? null,
     avoidRich: false,
@@ -129,6 +130,7 @@ export function parseTasteIntent(text: string, selections: PreferenceSelections)
   for (const [base, pattern] of basePatterns) {
     if (isExplicitlyExcluded(normalized, pattern)) {
       remove(intent.brothBases, base);
+      append(intent.excludedBrothBases, base);
       continue;
     }
     if (pattern.test(normalized)) append(intent.brothBases, base);

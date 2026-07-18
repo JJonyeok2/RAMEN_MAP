@@ -12,6 +12,7 @@ test("normalizes all eight seed candidates without losing their signature menu o
   assert.match(sql, /INSERT OR IGNORE INTO branches[\s\S]+FROM shop_candidates/);
   assert.match(sql, /INSERT OR IGNORE INTO menu_items[\s\S]+FROM shop_candidates/);
   assert.match(sql, /INSERT OR IGNORE INTO source_evidence[\s\S]+FROM shop_candidates/);
+  assert.match(sql, /INSERT OR IGNORE INTO verification_events[\s\S]+FROM shop_candidates/);
   assert.equal((sql.match(/INSERT OR IGNORE INTO areas/g) ?? []).length, 1);
 });
 
@@ -25,6 +26,16 @@ test("executes the normalized migration without data loss or extra product-event
   try {
     database.exec("PRAGMA foreign_keys = ON;");
     database.exec(seedSql);
+    database.exec(`
+      UPDATE shop_candidates SET
+        status = 'verified', reviewer_note = '주소와 메뉴 승인', verified_by = 'reviewer-a',
+        verified_at = '2026-07-01T00:00:00.000Z'
+      WHERE id = 'menkyudan';
+      UPDATE shop_candidates SET
+        status = 'hold', reviewer_note = '주소 충돌 보류', verified_by = 'reviewer-b',
+        verified_at = '2026-07-02T00:00:00.000Z'
+      WHERE id = 'shinmen';
+    `);
     database.exec(normalizedSql);
     database.exec(normalizedSql);
 
@@ -58,13 +69,45 @@ test("executes the normalized migration without data loss or extra product-event
       opening_hours: 0,
       opening_exceptions: 0,
       source_evidence: 14,
-      verification_events: 0,
+      verification_events: 8,
       areas: 8,
       product_events: 0,
     });
 
     const shopNames = database.prepare("SELECT name FROM shops").all().map((row) => row.name).sort();
     assert.deepEqual(shopNames, ["멘큐단", "신멘", "라멘 구락부", "멘지 망원점", "지로우 라멘", "오레노라멘 본점", "담택", "멘야준"].sort());
+
+    assert.deepEqual(database.prepare(`
+      SELECT id, entity_id, action, previous_value, next_value, note, actor, created_at
+      FROM verification_events WHERE entity_id IN ('branch:menkyudan', 'branch:shinmen') ORDER BY entity_id
+    `).all().map((row) => ({ ...row, next_value: JSON.parse(row.next_value) })), [
+      {
+        id: "event:migration:menkyudan:legacy-verification",
+        entity_id: "branch:menkyudan",
+        action: "migrate_legacy_verification",
+        previous_value: null,
+        next_value: { legacyStatus: "verified", normalizedVerificationStatus: "verified" },
+        note: "주소와 메뉴 승인",
+        actor: "reviewer-a",
+        created_at: "2026-07-01T00:00:00.000Z",
+      },
+      {
+        id: "event:migration:shinmen:legacy-verification",
+        entity_id: "branch:shinmen",
+        action: "migrate_legacy_verification",
+        previous_value: null,
+        next_value: { legacyStatus: "hold", normalizedVerificationStatus: "candidate" },
+        note: "주소 충돌 보류",
+        actor: "reviewer-b",
+        created_at: "2026-07-02T00:00:00.000Z",
+      },
+    ]);
+    assert.deepEqual(database.prepare(`
+      SELECT id, verification_status FROM branches WHERE id IN ('branch:menkyudan', 'branch:shinmen') ORDER BY id
+    `).all().map((row) => ({ ...row })), [
+      { id: "branch:menkyudan", verification_status: "verified" },
+      { id: "branch:shinmen", verification_status: "candidate" },
+    ]);
 
     const indexes = database.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((row) => row.name);
     for (const index of [

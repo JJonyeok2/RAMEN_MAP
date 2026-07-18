@@ -5,6 +5,7 @@ export interface TasteIntent {
   ramenTypes: RamenType[];
   brothStyles: BrothStyle[];
   brothBases: BrothBase[];
+  excludedBrothBases: BrothBase[];
   bodyTarget: number | null;
   spicinessTarget: number | null;
   avoidRich: boolean;

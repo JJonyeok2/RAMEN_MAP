@@ -75,7 +75,11 @@ function tasteReason(menu: MenuItem, intent: TasteIntent): string {
 
 export function scoreMenu(input: ScoreMenuInput): MenuScore | null {
   const { branch, menu, intent, mode, radiusKm } = input;
-  if (intent.avoidSpicy && menu.spicinessLevel !== null && menu.spicinessLevel > 1) return null;
+  if (intent.avoidSpicy && (menu.spicinessLevel === null || menu.spicinessLevel > 1)) return null;
+  if (
+    intent.excludedBrothBases.length > 0
+    && (menu.brothBases.length === 0 || intent.excludedBrothBases.some((base) => menu.brothBases.includes(base)))
+  ) return null;
 
   const taste = tasteScore(menu, intent);
   const distance = clamp(1 - input.distanceKm / radiusKm);

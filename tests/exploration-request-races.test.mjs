@@ -27,8 +27,11 @@ test("exploration isolates location from recommendations and invalidates pending
 
   const locate = section(page, "const chooseCurrentLocation", "const runSearch");
   assert.match(locate, /locationCoordinator\(\)\.begin\(\)/);
-  assert.doesNotMatch(locate, /recommendationCoordinator\(\)\.begin\(\)/);
   assert.match(locate, /supersedeRecommendation\(\)/);
+  assert.ok(
+    locate.indexOf("supersedeRecommendation()") < locate.indexOf("await requestRadiusSearchOrigin"),
+    "old recommendations must be invalidated before location acquisition waits",
+  );
 
   const search = section(page, "const runSearch", "const submit");
   assert.match(search, /recommendationCoordinator\(\)\.begin\(\)/);

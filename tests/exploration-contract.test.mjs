@@ -10,3 +10,10 @@ test("exploration combines quick preferences, natural language, and ranking mode
   assert.match(page, /\/api\/v1\/recommendations/);
   assert.match(page, /검증 전 후보/);
 });
+
+test("shop details render evidence associated with each public menu", async () => {
+  const page = await readFile(new URL("../app/shops/[slug]/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /menu\.evidence/);
+  assert.match(page, /메뉴 출처/);
+  assert.match(page, /evidence\.sourceUrl/);
+});

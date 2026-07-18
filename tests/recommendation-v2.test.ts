@@ -101,6 +101,7 @@ const emptyIntent: TasteIntent = {
   ramenTypes: [],
   brothStyles: [],
   brothBases: [],
+  excludedBrothBases: [],
   bodyTarget: null,
   spicinessTarget: null,
   avoidRich: false,
@@ -189,7 +190,7 @@ test("anger and stress prefer actual karai or spicy menu profiles", () => {
   assert.equal(intent.wantsKarai, true);
   assert.equal(intent.spicinessTarget, 4);
 
-  const response = recommend(makeScenarioBranches(), {
+  const response = recommend(makeScenarioBranches().slice(1), {
     origin,
     mode: "taste",
     quick: false,
@@ -262,10 +263,48 @@ test("does not retain explicitly excluded ramen types or broth bases", () => {
   });
   assert.deepEqual(intent.ramenTypes, ["shoyu"]);
   assert.deepEqual(intent.brothBases, ["닭"]);
+  assert.deepEqual(intent.excludedBrothBases, ["돼지"]);
 
   assert.deepEqual(parseTasteIntent("돈코츠는 원하지 않고 쇼유로", {}).ramenTypes, ["shoyu"]);
   assert.deepEqual(parseTasteIntent("돈코츠가 아닌 쇼유로", {}).ramenTypes, ["shoyu"]);
   assert.deepEqual(parseTasteIntent("돼지는 안 먹고 닭으로", {}).brothBases, ["닭"]);
+});
+
+test("preserves ingredient exclusions as hard constraints across mixed-base menus", () => {
+  const intent = parseTasteIntent("돼지는 빼고 닭 육수", {});
+  const response = recommend([
+    makeBranch({
+      id: "mixed-base",
+      menus: [makeMenu({ id: "mixed-base-menu", brothBases: ["닭", "돼지"] })],
+    }),
+    makeBranch({
+      id: "chicken-only",
+      menus: [makeMenu({ id: "chicken-only-menu", brothBases: ["닭"] })],
+    }),
+  ], { origin, mode: "taste", quick: false, intent });
+
+  assert.deepEqual(intent.excludedBrothBases, ["돼지"]);
+  assert.deepEqual(response.verified.map((item) => item.branch.id), ["chicken-only"]);
+});
+
+test("rejects unknown ingredient profiles under an ingredient hard constraint", () => {
+  const intent = parseTasteIntent("돼지는 빼고 닭 육수", {});
+  const branch = makeBranch();
+
+  assert.equal(scoreMenu({
+    branch,
+    menu: makeMenu({ brothBases: [] }),
+    intent,
+    mode: "taste",
+    distanceKm: 0,
+    radiusKm: 3,
+  }), null);
+
+  const response = recommend([
+    makeBranch({ id: "unknown-base", menus: [makeMenu({ id: "unknown-base-menu", brothBases: [] })] }),
+    makeBranch({ id: "known-chicken", menus: [makeMenu({ id: "known-chicken-menu", brothBases: ["닭"] })] }),
+  ], { origin, mode: "taste", quick: false, intent });
+  assert.deepEqual(response.verified.map((item) => item.branch.id), ["known-chicken"]);
 });
 
 test("natural-language explicit style replaces a conflicting style button", () => {
@@ -372,9 +411,28 @@ test("rejects a menu that violates the avoid-spicy hard constraint", () => {
   }), null);
 });
 
+test("rejects unknown spiciness under the avoid-spicy hard constraint", () => {
+  const branch = makeBranch();
+  assert.equal(scoreMenu({
+    branch,
+    menu: makeMenu({ spicinessLevel: null }),
+    intent: { ...emptyIntent, avoidSpicy: true },
+    mode: "taste",
+    distanceKm: 0,
+    radiusKm: 3,
+  }), null);
+
+  const response = recommend([
+    makeBranch({ id: "unknown", menus: [makeMenu({ id: "unknown-menu", spicinessLevel: null })] }),
+    makeBranch({ id: "known-mild", menus: [makeMenu({ id: "known-mild-menu", spicinessLevel: 1 })] }),
+  ], { origin, mode: "distance", quick: false, intent: { ...emptyIntent, avoidSpicy: true } });
+  assert.deepEqual(response.verified.map((item) => item.branch.id), ["known-mild"]);
+});
+
 test("returns verified results separately from stale and candidate suggestions", () => {
   const branches = [
-    ...makeScenarioBranches(),
+    makeScenarioBranches()[0],
+    makeScenarioBranches()[2],
     makeBranch({ id: "stale", lat: 37.405, verificationStatus: "stale" }),
   ];
   const response = recommend(branches, {
@@ -425,15 +483,15 @@ test("does not relax an avoid-spicy hard constraint", () => {
   }));
 });
 
-test("uses the smallest approved radius containing three eligible branches", () => {
+test("uses the smallest approved radius containing three verified branches", () => {
   const response = recommend(makeScenarioBranches(), {
     origin,
     mode: "balanced",
     quick: false,
     intent: emptyIntent,
   });
-  assert.equal(response.radiusKm, 3);
-  assert.equal(response.expanded, false);
+  assert.equal(response.radiusKm, 10);
+  assert.equal(response.expanded, true);
 
   const expanded = recommend(makeScenarioBranches().slice(1), {
     origin,
@@ -441,8 +499,46 @@ test("uses the smallest approved radius containing three eligible branches", () 
     quick: false,
     intent: emptyIntent,
   });
-  assert.equal(expanded.radiusKm, 10);
+  assert.equal(expanded.radiusKm, 30);
   assert.equal(expanded.expanded, true);
+});
+
+test("nearby candidates cannot prevent expansion toward verified results", () => {
+  const latitudeAt = (kilometers: number) => origin.lat + kilometers / 6371.0088 * 180 / Math.PI;
+  const branches = [
+    ...Array.from({ length: 3 }, (_, index) => makeBranch({
+      id: `candidate-near-${index}`,
+      lat: latitudeAt(1 + index * 0.1),
+      verificationStatus: "candidate",
+      menus: [makeMenu({ id: `candidate-near-${index}-menu`, verificationStatus: "candidate" })],
+    })),
+    ...Array.from({ length: 3 }, (_, index) => makeBranch({
+      id: `verified-far-${index}`,
+      lat: latitudeAt(8 + index * 0.2),
+    })),
+  ];
+
+  const response = recommend(branches, { origin, mode: "balanced", quick: false, intent: emptyIntent });
+  assert.equal(response.radiusKm, 10);
+  assert.deepEqual(response.verified.map((item) => item.branch.id), [
+    "verified-far-0", "verified-far-1", "verified-far-2",
+  ]);
+  assert.deepEqual(response.candidates, []);
+});
+
+test("candidates fill only the remaining three-result capacity", () => {
+  const branches = [
+    makeBranch({ id: "verified-1" }),
+    makeBranch({ id: "verified-2" }),
+    ...Array.from({ length: 3 }, (_, index) => makeBranch({
+      id: `candidate-${index}`,
+      verificationStatus: "candidate",
+      menus: [makeMenu({ id: `candidate-${index}-menu`, verificationStatus: "candidate" })],
+    })),
+  ];
+  const response = recommend(branches, { origin, mode: "balanced", quick: false, intent: emptyIntent });
+  assert.equal(response.verified.length, 2);
+  assert.equal(response.candidates.length, 1);
 });
 
 test("falls back to 30km when fewer than three eligible branches exist", () => {
@@ -567,7 +663,7 @@ test("breaks equal menu scores by menu ID within a branch", () => {
   assert.equal(response.verified[0]?.menuId, "menu-a");
 });
 
-test("sorts by score, then distance, then stable identifiers and caps each group at three", () => {
+test("sorts by score, then distance, then stable identifiers and caps total capacity at three", () => {
   const branches = Array.from({ length: 8 }, (_, index) => makeBranch({
     id: `branch-${String(index).padStart(2, "0")}`,
     lat: 37.395,
@@ -579,5 +675,5 @@ test("sorts by score, then distance, then stable identifiers and caps each group
   }));
   const response = recommend(branches.reverse(), { origin, mode: "balanced", quick: false, intent: emptyIntent });
   assert.deepEqual(response.verified.map((item) => item.branch.id), ["branch-00", "branch-01", "branch-02"]);
-  assert.deepEqual(response.candidates.map((item) => item.branch.id), ["branch-04", "branch-05", "branch-06"]);
+  assert.deepEqual(response.candidates, []);
 });

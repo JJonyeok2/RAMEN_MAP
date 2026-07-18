@@ -111,6 +111,19 @@ test("preserves verified and candidate/stale groups in parsed recommendations", 
   assert.equal(result.verified[0]?.branch.menus[0]?.name, "시오 청탕");
 });
 
+test("rejects recommendation payloads whose candidates exceed remaining capacity", () => {
+  assert.throws(() => parseRecommendationResponse({
+    result: {
+      radiusKm: 3,
+      verified: [validItem("verified"), validItem("verified", {
+        branch: { ...validItem("verified").branch, id: "branch:verified-two", slug: "verified-two" },
+      })],
+      candidates: [validItem("candidate"), validItem("stale")],
+      expanded: false,
+    },
+  }), /추천 응답/);
+});
+
 test("accepts a valid empty result and rejects malformed recommendation fields", () => {
   assert.deepEqual(parseRecommendationResponse({
     result: { radiusKm: 30, verified: [], candidates: [], expanded: true },

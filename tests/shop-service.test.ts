@@ -262,6 +262,96 @@ test("groups normalized menu rows and handles stale windows and invalid profiles
   });
 });
 
+test("drops malformed public D1 records individually instead of poisoning valid rows", () => {
+  const branches = mapBranchRows([
+    joinedRow,
+    {
+      ...joinedRow,
+      menu_id: "m-bad-price",
+      menu_name: "잘못된 가격",
+      price: -1,
+    },
+    {
+      ...joinedRow,
+      branch_id: "bad-branch",
+      slug: "bad-branch",
+      shop_name: "제어\u0000문자",
+      last_verified_at: "not-a-date",
+      menu_id: "bad-branch-menu",
+    },
+  ], new Date("2026-07-17T00:00:00.000Z"));
+
+  assert.deepEqual(branches.map((branch) => branch.id), ["b1"]);
+  assert.deepEqual(branches[0].menus.map((menu) => menu.id), ["m1"]);
+});
+
+test("drops malformed areas while retaining valid public area records", async () => {
+  const database: D1DatabaseLike = {
+    prepare() {
+      return {
+        bind() { return this; },
+        async all<T>() {
+          return { results: [
+            { id: "anyang", name: "안양", kind: "district", lat: 37.39, lng: 126.96 },
+            { id: 42, name: "잘못된 지역", kind: "district", lat: 37.39, lng: 126.96 },
+            { id: "bad-date", name: "\u0000", kind: "station", lat: 37.39, lng: 126.96 },
+          ] as T[] };
+        },
+        async first<T>() { return null as T | null; },
+        async run() {},
+      };
+    },
+  };
+  assert.deepEqual(await createD1ShopRepository(database).listAreas(), [
+    { id: "anyang", name: "안양", kind: "district", lat: 37.39, lng: 126.96 },
+  ]);
+});
+
+test("associates public evidence with branch and menu records without private columns", async () => {
+  const statements: Array<{ sql: string; values: unknown[] }> = [];
+  const database: D1DatabaseLike = {
+    prepare(sql) {
+      const statement = { sql, values: [] as unknown[] };
+      statements.push(statement);
+      return {
+        bind(...values: unknown[]) { statement.values = values; return this; },
+        async all<T>() {
+          if (sql.includes("WHERE b.slug = ?")) {
+            return { results: [
+              joinedRow,
+              { ...joinedRow, menu_id: "m2", menu_name: "쇼유", price: 11_000 },
+            ] as T[] };
+          }
+          if (sql.includes("FROM source_evidence")) {
+            return { results: [
+              { id: "e-branch", entity_type: "branch", entity_id: "b1", source_name: "공식", source_url: "https://example.com/branch", checked_at: "2026-07-18", note: "지점" },
+              { id: "e-menu", entity_type: "menu", entity_id: "m1", source_name: "메뉴판", source_url: "https://example.com/menu", checked_at: "2026-07-18", note: "메뉴" },
+              { id: "e-private", entity_type: "menu", entity_id: "private-menu", source_name: "내부", source_url: "https://example.com/private", checked_at: "2026-07-18", note: "비공개", collected_by: "private-operator" },
+              { id: "e-unsafe", entity_type: "menu", entity_id: "m2", source_name: "위험", source_url: "javascript:alert(1)", checked_at: "2026-07-18", note: "위험" },
+            ] as T[] };
+          }
+          throw new Error(`Unexpected query: ${sql}`);
+        },
+        async first<T>() { return null as T | null; },
+        async run() {},
+      };
+    },
+  };
+
+  const detail = await createD1ShopRepository(database, new Date("2026-07-17T00:00:00.000Z"))
+    .getPublicShopBySlug("one");
+  assert.deepEqual(detail?.evidence.map((item) => item.id), ["e-branch"]);
+  assert.deepEqual(detail?.menus.map((menu) => [menu.id, menu.evidence.map((item) => item.id)]), [
+    ["m1", ["e-menu"]],
+    ["m2", []],
+  ]);
+  assert.equal("collected_by" in (detail?.menus[0].evidence[0] ?? {}), false);
+  const evidenceQuery = statements.find((statement) => statement.sql.includes("FROM source_evidence"));
+  assert.ok(evidenceQuery);
+  assert.deepEqual(evidenceQuery.values, ["b1", "b1"]);
+  assert.doesNotMatch(evidenceQuery.sql, /collected_by/);
+});
+
 test("uses normalized public D1 queries and never writes nearby origins", async () => {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
   const database: D1DatabaseLike = {
@@ -279,10 +369,10 @@ test("uses normalized public D1 queries and never writes nearby origins", async 
             return { results: [{ id: "anyang", name: "안양", kind: "district", lat: 37.3943, lng: 126.9568 }] as T[] };
           }
           if (sql.includes("FROM source_evidence")) {
-            assert.deepEqual(statement.values, ["b1"]);
+            assert.deepEqual(statement.values, ["b1", "b1"]);
             return { results: [
-              { id: "e2", source_name: "새 출처", source_url: "https://example.com/new", checked_at: "2026-07-16T00:00:00.000Z", note: "새" },
-              { id: "e1", source_name: "기존 출처", source_url: "https://example.com/old", checked_at: "2026-07-01T00:00:00.000Z", note: "기존" },
+              { id: "e2", entity_type: "branch", entity_id: "b1", source_name: "새 출처", source_url: "https://example.com/new", checked_at: "2026-07-16T00:00:00.000Z", note: "새" },
+              { id: "e1", entity_type: "branch", entity_id: "b1", source_name: "기존 출처", source_url: "https://example.com/old", checked_at: "2026-07-01T00:00:00.000Z", note: "기존" },
             ] as T[] };
           }
           if (sql.includes("WHERE b.slug = ?")) {

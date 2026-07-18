@@ -8,6 +8,7 @@ import type {
   VerificationEventRow,
 } from "../../db/schema.ts";
 import type { PublicStatus, VerificationStatus } from "../../domain/ramen.ts";
+import type { CandidateCreationInput } from "./request.ts";
 
 export const ADMIN_ACTOR = "RAMEN MAP 운영자";
 
@@ -71,7 +72,7 @@ export type EvidenceInput = {
 
 export type StateTransitionInput = {
   entityType: "branch" | "menu";
-  entityId: string;
+  entityId?: string;
   verificationStatus?: VerificationStatus;
   publicStatus?: PublicStatus;
   note: string;
@@ -80,6 +81,8 @@ export type StateTransitionInput = {
 const verificationStatuses = new Set<VerificationStatus>(["verified", "candidate", "stale", "rejected"]);
 const publicStatuses = new Set<PublicStatus>(["active", "hidden", "closed", "moved"]);
 const availabilityStatuses = new Set<MenuItemRow["availability_status"]>(["available", "seasonal", "sold_out", "unknown"]);
+const identifierPattern = /^[a-z][a-z0-9-]*(?::[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
+const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function requiredText(value: string, label: string) {
   const normalized = value.trim();
@@ -96,6 +99,53 @@ function note(value: string, transition = false) {
 function nullableText(value: string | null) {
   const normalized = value?.trim() ?? "";
   return normalized || null;
+}
+
+function sourceUrl(value: string) {
+  const normalized = requiredText(value, "출처 URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("출처 URL을 확인해 주세요.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("출처 URL을 확인해 주세요.");
+  return normalized;
+}
+
+function normalizedShopName(value: string) {
+  return value.normalize("NFKC").toLocaleLowerCase("ko-KR").replace(/\s+/g, "");
+}
+
+function canonicalWeeklyHours(input: WeeklyHoursInput[]): WeeklyHoursInput[] {
+  return input.map((item) => ({
+    weekday: item.weekday,
+    opensAt: nullableText(item.opensAt),
+    closesAt: nullableText(item.closesAt),
+    breakStartsAt: nullableText(item.breakStartsAt),
+    breakEndsAt: nullableText(item.breakEndsAt),
+    lastOrderAt: nullableText(item.lastOrderAt),
+    isClosed: item.isClosed,
+  })).sort((left, right) => left.weekday - right.weekday);
+}
+
+function canonicalBranchInput(input: BranchUpdateInput): BranchUpdateInput {
+  if (
+    input.lat !== null && (!Number.isFinite(input.lat) || input.lat < -90 || input.lat > 90)
+    || input.lng !== null && (!Number.isFinite(input.lng) || input.lng < -180 || input.lng > 180)
+    || (input.lat === null) !== (input.lng === null)
+  ) throw new Error("지점 좌표를 확인해 주세요.");
+  return {
+    branchName: nullableText(input.branchName),
+    region: requiredText(input.region, "시·도"),
+    district: requiredText(input.district, "구·시"),
+    address: requiredText(input.address, "주소"),
+    lat: input.lat,
+    lng: input.lng,
+    phone: nullableText(input.phone),
+    hoursText: nullableText(input.hoursText),
+    weeklyHours: canonicalWeeklyHours(input.weeklyHours),
+  };
 }
 
 function list<T>(result: { results?: T[] }) {
@@ -228,30 +278,153 @@ export function createAdminService(
       };
     },
 
+    async createCandidate(input: CandidateCreationInput, reviewerNote: string) {
+      const changeNote = note(reviewerNote);
+      const shopId = requiredText(input.shopId, "매장 식별자");
+      const branchId = requiredText(input.branchId, "지점 식별자");
+      const slug = requiredText(input.slug, "슬러그");
+      if (
+        !identifierPattern.test(shopId) || !shopId.startsWith("shop:")
+        || !identifierPattern.test(branchId) || !branchId.startsWith("branch:")
+        || !slugPattern.test(slug)
+      ) throw new Error("후보 식별자를 확인해 주세요.");
+      if (
+        !Number.isFinite(input.lat) || input.lat < -90 || input.lat > 90
+        || !Number.isFinite(input.lng) || input.lng < -180 || input.lng > 180
+      ) throw new Error("후보 좌표를 확인해 주세요.");
+      const normalizedSourceUrl = sourceUrl(input.sourceUrl);
+      const duplicate = await db.prepare(`SELECT
+        EXISTS(SELECT 1 FROM shops WHERE id = ?) AS shop_id_exists,
+        EXISTS(SELECT 1 FROM branches WHERE id = ?) AS branch_id_exists,
+        EXISTS(SELECT 1 FROM branches WHERE slug = ?) AS slug_exists
+      `).bind(shopId, branchId, slug).first<{
+        shop_id_exists: number;
+        branch_id_exists: number;
+        slug_exists: number;
+      }>();
+      if (duplicate?.shop_id_exists || duplicate?.branch_id_exists || duplicate?.slug_exists) {
+        throw new Error("후보 식별자 또는 슬러그가 이미 사용 중입니다.");
+      }
+
+      const timestamp = now();
+      const shopName = requiredText(input.shopName, "매장명");
+      const normalizedName = normalizedShopName(shopName);
+      const evidenceId = `evidence:${newId()}`;
+      const branch = {
+        id: branchId,
+        shopId,
+        slug,
+        branchName: nullableText(input.branchName),
+        region: requiredText(input.region, "시·도"),
+        district: requiredText(input.district, "구·시"),
+        address: requiredText(input.address, "주소"),
+        lat: input.lat,
+        lng: input.lng,
+        phone: nullableText(input.phone),
+        publicStatus: "hidden" as const,
+        verificationStatus: "candidate" as const,
+        hoursText: null,
+        lastVerifiedAt: null,
+      };
+      const evidence = {
+        id: evidenceId,
+        entityType: "branch" as const,
+        entityId: branchId,
+        fieldName: "general",
+        sourceName: requiredText(input.sourceName, "출처명"),
+        sourceUrl: normalizedSourceUrl,
+        checkedAt: requiredText(input.checkedAt, "확인일"),
+        note: input.evidenceNote.trim(),
+      };
+      const nextValue = JSON.stringify({
+        shop: { id: shopId, name: shopName, normalizedName },
+        branch,
+        evidence,
+      });
+      await auditedBatch([
+        db.prepare(`INSERT INTO shops (id, name, normalized_name, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?)`).bind(shopId, shopName, normalizedName, timestamp, timestamp),
+        db.prepare(`INSERT INTO branches (
+          id, shop_id, slug, branch_name, region, district, address, lat, lng, phone,
+          public_status, verification_status, hours_text, last_verified_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+          branch.id, branch.shopId, branch.slug, branch.branchName, branch.region, branch.district,
+          branch.address, branch.lat, branch.lng, branch.phone, branch.publicStatus,
+          branch.verificationStatus, branch.hoursText, branch.lastVerifiedAt, timestamp, timestamp,
+        ),
+        db.prepare(`INSERT INTO source_evidence (
+          id, entity_type, entity_id, field_name, source_name, source_url, checked_at, note, collected_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+          evidence.id, evidence.entityType, evidence.entityId, evidence.fieldName, evidence.sourceName,
+          evidence.sourceUrl, evidence.checkedAt, evidence.note, ADMIN_ACTOR,
+        ),
+      ], {
+        entityType: "branch",
+        entityId: branchId,
+        action: "create_candidate",
+        previousValue: null,
+        nextValue,
+        note: changeNote,
+      });
+      return branchId;
+    },
+
     async updateBranch(id: string, input: BranchUpdateInput, reviewerNote: string) {
       const changeNote = note(reviewerNote);
-      if (!input.weeklyHours.every((item) => Number.isInteger(item.weekday) && item.weekday >= 0 && item.weekday <= 6)) {
+      const canonical = canonicalBranchInput(input);
+      if (!canonical.weeklyHours.every((item) => Number.isInteger(item.weekday) && item.weekday >= 0 && item.weekday <= 6)) {
         throw new Error("요일 값을 확인해 주세요.");
       }
-      if (new Set(input.weeklyHours.map((item) => item.weekday)).size !== input.weeklyHours.length) {
+      if (new Set(canonical.weeklyHours.map((item) => item.weekday)).size !== canonical.weeklyHours.length) {
         throw new Error("요일별 영업시간은 한 번씩만 입력해 주세요.");
       }
-      const nextValue = JSON.stringify(input);
+      const previousBranch = await db.prepare(`SELECT branch_name, region, district, address, lat, lng,
+        phone, hours_text, updated_at FROM branches WHERE id = ?`).bind(id).first<Pick<
+          BranchRow,
+          "branch_name" | "region" | "district" | "address" | "lat" | "lng" | "phone" | "hours_text" | "updated_at"
+        >>();
+      if (!previousBranch) throw new Error("수정할 지점을 찾지 못했습니다.");
+      const previousHours = await db.prepare("SELECT * FROM opening_hours WHERE branch_id = ? ORDER BY weekday")
+        .bind(id).all<OpeningHoursRow>();
+      const previousValue = JSON.stringify({
+        branchName: previousBranch.branch_name,
+        region: previousBranch.region,
+        district: previousBranch.district,
+        address: previousBranch.address,
+        lat: previousBranch.lat,
+        lng: previousBranch.lng,
+        phone: previousBranch.phone,
+        hoursText: previousBranch.hours_text,
+        weeklyHours: list(previousHours).map((item) => ({
+          weekday: item.weekday,
+          opensAt: item.opens_at,
+          closesAt: item.closes_at,
+          breakStartsAt: item.break_starts_at,
+          breakEndsAt: item.break_ends_at,
+          lastOrderAt: item.last_order_at,
+          isClosed: item.is_closed === 1,
+        })),
+        updatedAt: previousBranch.updated_at,
+      });
+      const timestamp = now();
+      const nextValue = JSON.stringify({ ...canonical, updatedAt: timestamp });
       const statements = [
         db.prepare(`UPDATE branches SET branch_name = ?, region = ?, district = ?, address = ?, lat = ?, lng = ?,
           phone = ?, hours_text = ?, updated_at = ? WHERE id = ?`).bind(
-          nullableText(input.branchName), requiredText(input.region, "시·도"), requiredText(input.district, "구·시"),
-          requiredText(input.address, "주소"), input.lat, input.lng, nullableText(input.phone), nullableText(input.hoursText), now(), id,
+          canonical.branchName, canonical.region, canonical.district, canonical.address, canonical.lat, canonical.lng,
+          canonical.phone, canonical.hoursText, timestamp, id,
         ),
         db.prepare("DELETE FROM opening_hours WHERE branch_id = ?").bind(id),
-        ...input.weeklyHours.map((item) => db.prepare(`INSERT INTO opening_hours (
+        ...canonical.weeklyHours.map((item) => db.prepare(`INSERT INTO opening_hours (
           id, branch_id, weekday, opens_at, closes_at, break_starts_at, break_ends_at, last_order_at, is_closed
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
           `hours:${newId()}`, id, item.weekday, item.opensAt, item.closesAt, item.breakStartsAt,
           item.breakEndsAt, item.lastOrderAt, item.isClosed ? 1 : 0,
         )),
       ];
-      await auditedBatch(statements, { entityType: "branch", entityId: id, action: "update_facts", nextValue, note: changeNote });
+      await auditedBatch(statements, {
+        entityType: "branch", entityId: id, action: "update_facts", previousValue, nextValue, note: changeNote,
+      });
     },
 
     async createMenu(branchId: string, input: MenuInput, reviewerNote: string) {
@@ -321,43 +494,95 @@ export function createAdminService(
         if (!menu) throw new Error("이 지점에 소속된 메뉴 근거 대상을 찾지 못했습니다.");
       }
       const evidenceId = `evidence:${newId()}`;
+      const normalizedSourceUrl = sourceUrl(input.sourceUrl);
       await auditedBatch([
         db.prepare(`INSERT INTO source_evidence (
           id, entity_type, entity_id, field_name, source_name, source_url, checked_at, note, collected_by
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
           evidenceId, input.entityType, targetId, requiredText(input.fieldName, "근거 필드"),
-          requiredText(input.sourceName, "출처명"), requiredText(input.sourceUrl, "출처 URL"),
+          requiredText(input.sourceName, "출처명"), normalizedSourceUrl,
           requiredText(input.checkedAt, "확인일"), input.note.trim(), ADMIN_ACTOR,
         ),
       ], { entityType: input.entityType, entityId: targetId, action: "append_evidence", nextValue: JSON.stringify({ ...input, entityId: targetId, id: evidenceId }), note: changeNote });
       return evidenceId;
     },
 
-    async transitionState(input: StateTransitionInput) {
+    async transitionState(branchId: string, input: StateTransitionInput) {
       const reviewerNote = note(input.note, true);
       if (!input.verificationStatus && !input.publicStatus) throw new Error("변경할 상태가 필요합니다.");
       if (input.verificationStatus && !verificationStatuses.has(input.verificationStatus)) throw new Error("검증 상태를 확인해 주세요.");
       if (input.publicStatus && (!publicStatuses.has(input.publicStatus) || input.entityType !== "branch")) throw new Error("공개 상태를 확인해 주세요.");
+      const timestamp = now();
       const assignments: string[] = [];
       const values: unknown[] = [];
       if (input.verificationStatus) {
         assignments.push("verification_status = ?", "last_verified_at = ?");
-        values.push(input.verificationStatus, input.verificationStatus === "verified" ? now() : null);
+        values.push(input.verificationStatus, input.verificationStatus === "verified" ? timestamp : null);
       }
       if (input.publicStatus) {
         assignments.push("public_status = ?");
         values.push(input.publicStatus);
       }
       assignments.push("updated_at = ?");
-      values.push(now(), input.entityId);
-      const table = input.entityType === "branch" ? "branches" : "menu_items";
+      values.push(timestamp);
+
+      let targetId: string;
+      let previousValue: string;
+      let nextValue: string;
+      let mutation: D1Statement;
+      if (input.entityType === "branch") {
+        targetId = branchId;
+        if (input.entityId && input.entityId !== branchId) throw new Error("지점 상태 대상을 찾지 못했습니다.");
+        const previous = await db.prepare(`SELECT verification_status, public_status, last_verified_at, updated_at
+          FROM branches WHERE id = ?`).bind(branchId).first<Pick<
+            BranchRow, "verification_status" | "public_status" | "last_verified_at" | "updated_at"
+          >>();
+        if (!previous) throw new Error("상태를 변경할 지점을 찾지 못했습니다.");
+        previousValue = JSON.stringify({
+          verificationStatus: previous.verification_status,
+          publicStatus: previous.public_status,
+          lastVerifiedAt: previous.last_verified_at,
+          updatedAt: previous.updated_at,
+        });
+        nextValue = JSON.stringify({
+          verificationStatus: input.verificationStatus ?? previous.verification_status,
+          publicStatus: input.publicStatus ?? previous.public_status,
+          lastVerifiedAt: input.verificationStatus
+            ? input.verificationStatus === "verified" ? timestamp : null
+            : previous.last_verified_at,
+          updatedAt: timestamp,
+        });
+        mutation = db.prepare(`UPDATE branches SET ${assignments.join(", ")} WHERE id = ?`).bind(...values, targetId);
+      } else {
+        targetId = requiredText(input.entityId ?? "", "메뉴 상태 대상");
+        const previous = await db.prepare(`SELECT m.verification_status, m.last_verified_at, m.updated_at
+          FROM menu_items m WHERE m.id = ? AND m.branch_id = ?`).bind(targetId, branchId).first<Pick<
+            MenuItemRow, "verification_status" | "last_verified_at" | "updated_at"
+          >>();
+        if (!previous) throw new Error("이 지점에 소속된 상태 변경 메뉴를 찾지 못했습니다.");
+        previousValue = JSON.stringify({
+          verificationStatus: previous.verification_status,
+          lastVerifiedAt: previous.last_verified_at,
+          updatedAt: previous.updated_at,
+        });
+        nextValue = JSON.stringify({
+          verificationStatus: input.verificationStatus ?? previous.verification_status,
+          lastVerifiedAt: input.verificationStatus
+            ? input.verificationStatus === "verified" ? timestamp : null
+            : previous.last_verified_at,
+          updatedAt: timestamp,
+        });
+        mutation = db.prepare(`UPDATE menu_items SET ${assignments.join(", ")}
+          WHERE id = ? AND branch_id = ?`).bind(...values, targetId, branchId);
+      }
       await auditedBatch([
-        db.prepare(`UPDATE ${table} SET ${assignments.join(", ")} WHERE id = ?`).bind(...values),
+        mutation,
       ], {
         entityType: input.entityType,
-        entityId: input.entityId,
+        entityId: targetId,
         action: "transition_state",
-        nextValue: JSON.stringify({ verificationStatus: input.verificationStatus, publicStatus: input.publicStatus }),
+        previousValue,
+        nextValue,
         note: reviewerNote,
       });
     },

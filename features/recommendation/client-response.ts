@@ -177,7 +177,7 @@ export function parseRecommendationResponse(value: unknown): RecommendationRespo
       !Array.isArray(input.verified)
       || !Array.isArray(input.candidates)
       || input.verified.length > 3
-      || input.candidates.length > 3
+      || input.candidates.length > Math.max(0, 3 - input.verified.length)
       || typeof input.expanded !== "boolean"
       || input.expanded !== (radiusKm !== 3)
     ) throw new Error();

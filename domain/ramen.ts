@@ -46,8 +46,16 @@ export interface BranchSummary {
   menus: MenuItem[];
 }
 
+export interface PublicEvidence {
+  id: string;
+  sourceName: string;
+  sourceUrl: string;
+  checkedAt: string;
+  note: string;
+}
+
 export interface ShopDetail extends BranchSummary {
-  evidence: Array<{ id: string; sourceName: string; sourceUrl: string; checkedAt: string; note: string }>;
+  evidence: PublicEvidence[];
   hoursText: string | null;
 }
 
@@ -63,6 +71,7 @@ export type PublicVerificationStatus = Exclude<VerificationStatus, "rejected">;
 export type PublicMenuItem = Omit<MenuItem, "verificationStatus"> & {
   verificationStatus: PublicVerificationStatus;
 };
+export type PublicShopMenuItem = PublicMenuItem & { evidence: PublicEvidence[] };
 export type PublicBranchSummary = Omit<BranchSummary, "publicStatus" | "verificationStatus" | "menus"> & {
   publicStatus: "active";
   verificationStatus: PublicVerificationStatus;
@@ -71,7 +80,7 @@ export type PublicBranchSummary = Omit<BranchSummary, "publicStatus" | "verifica
 export type PublicShopDetail = Omit<ShopDetail, "publicStatus" | "verificationStatus" | "menus"> & {
   publicStatus: "active";
   verificationStatus: PublicVerificationStatus;
-  menus: PublicMenuItem[];
+  menus: PublicShopMenuItem[];
 };
 
 type PublicBranchCheck = {

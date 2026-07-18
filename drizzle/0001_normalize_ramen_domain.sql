@@ -165,6 +165,25 @@ SELECT
 FROM shop_candidates
 WHERE secondary_source_url <> '';
 
+INSERT OR IGNORE INTO verification_events (
+  id, entity_type, entity_id, action, previous_value, next_value, note, actor, created_at
+)
+SELECT
+  'event:migration:' || id || ':legacy-verification',
+  'branch',
+  'branch:' || id,
+  'migrate_legacy_verification',
+  NULL,
+  json_object(
+    'legacyStatus', status,
+    'normalizedVerificationStatus',
+    CASE status WHEN 'verified' THEN 'verified' WHEN 'rejected' THEN 'rejected' ELSE 'candidate' END
+  ),
+  reviewer_note,
+  CASE WHEN verified_by = '' THEN 'legacy migration' ELSE verified_by END,
+  COALESCE(verified_at, updated_at, created_at)
+FROM shop_candidates;
+
 INSERT OR IGNORE INTO areas (id, name, kind, lat, lng) VALUES
   ('anyang', '안양', 'district', 37.3943, 126.9568),
   ('mangwon', '망원', 'neighborhood', 37.5560, 126.9100),

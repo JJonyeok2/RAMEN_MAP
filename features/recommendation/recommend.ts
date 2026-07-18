@@ -43,7 +43,11 @@ export function recommend(
     const menus = branch.menus.filter((menu) => (
       (menu.availabilityStatus === "available" || menu.availabilityStatus === "unknown")
       && (branch.verificationStatus !== "verified" || menu.verificationStatus === "verified")
-      && !(request.intent.avoidSpicy && menu.spicinessLevel !== null && menu.spicinessLevel > 1)
+      && !(request.intent.avoidSpicy && (menu.spicinessLevel === null || menu.spicinessLevel > 1))
+      && !(
+        request.intent.excludedBrothBases.length > 0
+        && (menu.brothBases.length === 0 || request.intent.excludedBrothBases.some((base) => menu.brothBases.includes(base)))
+      )
     ));
     if (menus.length === 0) continue;
     eligible.push({
@@ -54,7 +58,9 @@ export function recommend(
   }
 
   const radiusKm = searchRadiiKm.find((radius) => (
-    eligible.filter((value) => value.distanceKm <= radius).length >= 3
+    eligible.filter((value) => (
+      value.branch.verificationStatus === "verified" && value.distanceKm <= radius
+    )).length >= 3
   )) ?? 30;
 
   const items: RecommendationItem[] = [];
@@ -88,6 +94,8 @@ export function recommend(
   }
 
   const verified = items.filter((item) => item.branch.verificationStatus === "verified").sort(compareItems).slice(0, 3);
-  const candidates = items.filter((item) => item.branch.verificationStatus !== "verified").sort(compareItems).slice(0, 3);
+  const candidates = items.filter((item) => item.branch.verificationStatus !== "verified")
+    .sort(compareItems)
+    .slice(0, Math.max(0, 3 - verified.length));
   return { radiusKm, verified, candidates, expanded: radiusKm !== 3 };
 }

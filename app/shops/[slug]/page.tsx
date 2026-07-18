@@ -111,6 +111,20 @@ export default async function ShopDetailPage({ params }: { params: Promise<{ slu
                   <div><dt>맛 태그</dt><dd>{menu.tags.length ? menu.tags.join(" · ") : "맛 태그 미확인"}</dd></div>
                   <div><dt>메뉴 최근 검증</dt><dd>{formatDate(menu.lastVerifiedAt, "최근 검증일 미등록")}</dd></div>
                 </dl>
+                <div className="menu-evidence">
+                  <h4>메뉴 출처</h4>
+                  {menu.evidence.length ? (
+                    <ul className="evidence-list">
+                      {menu.evidence.map((evidence) => (
+                        <li key={evidence.id}>
+                          <a href={evidence.sourceUrl} target="_blank" rel="noreferrer">{evidence.sourceName} ↗</a>
+                          <span>확인일 {formatDate(evidence.checkedAt)}</span>
+                          {evidence.note ? <p>{evidence.note}</p> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>메뉴별 공개 출처가 아직 없어요.</p>}
+                </div>
               </article>
             ))}
           </div>

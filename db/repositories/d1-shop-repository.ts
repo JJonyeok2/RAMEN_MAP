@@ -6,8 +6,8 @@ import {
   type BrothBase,
   type BrothStyle,
   type PublicBranchSummary,
+  type PublicEvidence,
   type PublicMenuItem,
-  type PublicShopDetail,
   type PublicVerificationStatus,
   type RamenType,
 } from "../../domain/ramen.ts";
@@ -23,6 +23,8 @@ const publicStatuses = new Set<PublicVerificationStatus>(["verified", "candidate
 const ramenTypes = new Set<RamenType>(["shoyu", "shio", "miso", "tonkotsu", "tsukemen", "mazesoba"]);
 const brothStyles = new Set<BrothStyle>(["chintan", "paitan", "dry", "dipping"]);
 const brothBases = new Set<BrothBase>(["닭", "돼지", "소", "해산물", "채소"]);
+const areaIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const branchSelect = `
   SELECT
@@ -47,30 +49,77 @@ const branchSelect = `
   LEFT JOIN menu_profiles p ON p.menu_item_id = m.id
 `;
 
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
+function stringValue(value: unknown, maximum = 300): string | null {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= maximum
+    && value.trim() === value
+    && !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : null;
 }
 
-function nullableString(value: unknown): string | null {
-  return value === null || value === undefined ? null : stringValue(value);
+function nullableString(value: unknown, maximum = 300): string | null {
+  return value === null || value === undefined ? null : stringValue(value, maximum);
 }
 
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function finiteNumber(value: unknown, minimum = Number.NEGATIVE_INFINITY, maximum = Number.POSITIVE_INFINITY): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum ? value : null;
+}
+
+function integer(value: unknown, minimum: number, maximum: number): number | null {
+  const parsed = finiteNumber(value, minimum, maximum);
+  return parsed !== null && Number.isInteger(parsed) ? parsed : null;
 }
 
 function parseStringArray(value: unknown): string[] {
   if (typeof value !== "string") return [];
   try {
     const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : [];
+    if (!Array.isArray(parsed) || parsed.length > 20) return [];
+    const strings = parsed.map((item) => stringValue(item, 80));
+    return strings.every((item): item is string => item !== null) ? [...new Set(strings)] : [];
   } catch {
     return [];
   }
 }
 
 function enumArray<T extends string>(value: unknown, allowed: ReadonlySet<T>): T[] {
-  return parseStringArray(value).filter((item): item is T => allowed.has(item as T));
+  return [...new Set(parseStringArray(value).filter((item): item is T => allowed.has(item as T)))];
+}
+
+function normalizedIsoDate(value: unknown): string | null {
+  const parsed = stringValue(value, 40);
+  if (!parsed) return null;
+  const candidate = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(parsed)
+    ? `${parsed.replace(" ", "T")}Z`
+    : parsed;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(candidate)) return null;
+  const date = new Date(candidate);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === candidate.slice(0, 10)
+    ? candidate
+    : null;
+}
+
+function checkedDate(value: unknown): string | null {
+  const parsed = stringValue(value, 40);
+  if (!parsed) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(parsed)) {
+    const date = new Date(`${parsed}T00:00:00.000Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === parsed ? parsed : null;
+  }
+  return normalizedIsoDate(parsed);
+}
+
+function httpUrl(value: unknown): string | null {
+  const parsed = stringValue(value, 2_048);
+  if (!parsed) return null;
+  try {
+    const url = new URL(parsed);
+    return url.protocol === "http:" || url.protocol === "https:" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function publicVerificationStatus(value: unknown, checkedAt: string | null, entity: "branch" | "menu", now: Date): PublicVerificationStatus | null {
@@ -80,7 +129,7 @@ function publicVerificationStatus(value: unknown, checkedAt: string | null, enti
 }
 
 function level(value: unknown, minimum: number, maximum: number): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum ? value : null;
+  return integer(value, minimum, maximum);
 }
 
 function openingHours(value: unknown): OpeningStatusHours[] {
@@ -110,18 +159,26 @@ function openingHours(value: unknown): OpeningStatusHours[] {
 }
 
 function menuFromRow(row: JoinedBranchRow, now: Date): PublicMenuItem | null {
-  const id = stringValue(row.menu_id);
-  const name = stringValue(row.menu_name);
-  const availabilityStatus = stringValue(row.availability_status);
-  const lastVerifiedAt = nullableString(row.menu_last_verified_at);
+  const id = stringValue(row.menu_id, 128);
+  const name = stringValue(row.menu_name, 200);
+  const availabilityStatus = stringValue(row.availability_status, 20);
+  const lastVerifiedAt = row.menu_last_verified_at === null || row.menu_last_verified_at === undefined
+    ? null
+    : normalizedIsoDate(row.menu_last_verified_at);
   const verificationStatus = publicVerificationStatus(row.menu_verification_status, lastVerifiedAt, "menu", now);
-  if (!id || !name || !verificationStatus || !["available", "seasonal", "sold_out", "unknown"].includes(availabilityStatus ?? "")) return null;
+  const price = row.price === null || row.price === undefined ? null : integer(row.price, 0, 1_000_000);
+  if (
+    !id || !name || !verificationStatus
+    || row.menu_last_verified_at !== null && row.menu_last_verified_at !== undefined && lastVerifiedAt === null
+    || row.price !== null && row.price !== undefined && price === null
+    || !["available", "seasonal", "sold_out", "unknown"].includes(availabilityStatus ?? "")
+  ) return null;
 
-  const brothStyle = stringValue(row.broth_style);
+  const brothStyle = stringValue(row.broth_style, 20);
   return {
     id,
     name,
-    price: finiteNumber(row.price),
+    price,
     ramenTypes: enumArray(row.ramen_types, ramenTypes),
     brothStyle: brothStyle && brothStyles.has(brothStyle as BrothStyle) ? brothStyle as BrothStyle : null,
     bodyLevel: level(row.body_level, 1, 5) as PublicMenuItem["bodyLevel"],
@@ -139,20 +196,24 @@ function mapBranchDetails(rows: readonly JoinedBranchRow[], now: Date): MappedBr
   const menuIds = new Map<string, Set<string>>();
 
   for (const row of rows) {
-    const id = stringValue(row.branch_id);
-    const slug = stringValue(row.slug);
-    const shopName = stringValue(row.shop_name);
-    const branchName = nullableString(row.branch_name);
-    const region = stringValue(row.region);
-    const district = stringValue(row.district);
-    const address = stringValue(row.address);
-    const lat = finiteNumber(row.lat);
-    const lng = finiteNumber(row.lng);
-    const lastVerifiedAt = nullableString(row.last_verified_at);
+    const id = stringValue(row.branch_id, 128);
+    const slug = stringValue(row.slug, 100);
+    const shopName = stringValue(row.shop_name, 200);
+    const branchName = nullableString(row.branch_name, 120);
+    const region = stringValue(row.region, 80);
+    const district = stringValue(row.district, 100);
+    const address = stringValue(row.address, 300);
+    const lat = finiteNumber(row.lat, -90, 90);
+    const lng = finiteNumber(row.lng, -180, 180);
+    const lastVerifiedAt = row.last_verified_at === null || row.last_verified_at === undefined
+      ? null
+      : normalizedIsoDate(row.last_verified_at);
     const verificationStatus = publicVerificationStatus(row.verification_status, lastVerifiedAt, "branch", now);
     if (
-      !id || !slug || !shopName || branchName === null && row.branch_name !== null && row.branch_name !== undefined
+      !id || !slug || !slugPattern.test(slug) || !shopName
+      || branchName === null && row.branch_name !== null && row.branch_name !== undefined
       || !region || !district || !address || lat === null || lng === null
+      || row.last_verified_at !== null && row.last_verified_at !== undefined && lastVerifiedAt === null
       || row.public_status !== "active" || !verificationStatus
     ) continue;
 
@@ -169,14 +230,14 @@ function mapBranchDetails(rows: readonly JoinedBranchRow[], now: Date): MappedBr
           address,
           lat,
           lng,
-          phone: nullableString(row.phone),
+          phone: nullableString(row.phone, 40),
           publicStatus: "active",
           verificationStatus,
           lastVerifiedAt,
           openingStatus: openingStatusAt(openingHours(row.opening_hours_json), now),
           menus: [],
         },
-        hoursText: nullableString(row.hours_text),
+        hoursText: nullableString(row.hours_text, 500),
       };
       branches.set(id, mapped);
       menuIds.set(id, new Set());
@@ -197,21 +258,39 @@ export function mapBranchRows(rows: readonly JoinedBranchRow[], now = new Date()
 }
 
 function mapArea(row: AreaRow): Area | null {
-  if (!["district", "neighborhood", "station"].includes(row.kind) || !Number.isFinite(row.lat) || !Number.isFinite(row.lng)) return null;
-  return { id: row.id, name: row.name, kind: row.kind, lat: row.lat, lng: row.lng };
+  const id = stringValue(row.id, 64);
+  const name = stringValue(row.name, 100);
+  const lat = finiteNumber(row.lat, -90, 90);
+  const lng = finiteNumber(row.lng, -180, 180);
+  if (!id || !areaIdPattern.test(id) || !name || !["district", "neighborhood", "station"].includes(row.kind) || lat === null || lng === null) return null;
+  return { id, name, kind: row.kind, lat, lng };
 }
 
-function mapEvidence(rows: readonly Record<string, unknown>[]): PublicShopDetail["evidence"] {
+type MappedEvidence = PublicEvidence & { entityType: "branch" | "menu"; entityId: string };
+
+function mapEvidence(rows: readonly Record<string, unknown>[]): MappedEvidence[] {
   return rows.flatMap((row) => {
-    const id = stringValue(row.id);
-    const sourceName = stringValue(row.source_name);
-    const sourceUrl = stringValue(row.source_url);
-    const checkedAt = stringValue(row.checked_at);
-    const note = stringValue(row.note);
-    return id && sourceName && sourceUrl && checkedAt && note !== null
-      ? [{ id, sourceName, sourceUrl, checkedAt, note }]
+    const id = stringValue(row.id, 128);
+    const entityType = row.entity_type === "branch" || row.entity_type === "menu" ? row.entity_type : null;
+    const entityId = stringValue(row.entity_id, 128);
+    const sourceName = stringValue(row.source_name, 200);
+    const safeSourceUrl = httpUrl(row.source_url);
+    const checkedAt = checkedDate(row.checked_at);
+    const note = row.note === "" ? "" : stringValue(row.note, 1_000);
+    return id && entityType && entityId && sourceName && safeSourceUrl && checkedAt && note !== null
+      ? [{ id, entityType, entityId, sourceName, sourceUrl: safeSourceUrl, checkedAt, note }]
       : [];
   });
+}
+
+function publicEvidence(item: MappedEvidence): PublicEvidence {
+  return {
+    id: item.id,
+    sourceName: item.sourceName,
+    sourceUrl: item.sourceUrl,
+    checkedAt: item.checkedAt,
+    note: item.note,
+  };
 }
 
 export function createD1ShopRepository(
@@ -263,12 +342,26 @@ export function createD1ShopRepository(
       if (!mapped) return null;
 
       const evidence = await db.prepare(`
-        SELECT id, source_name, source_url, checked_at, note
+        SELECT entity_type, entity_id, id, source_name, source_url, checked_at, note
         FROM source_evidence
-        WHERE entity_type = 'branch' AND entity_id = ?
+        WHERE (entity_type = 'branch' AND entity_id = ?)
+          OR (entity_type = 'menu' AND entity_id IN (
+            SELECT id FROM menu_items
+            WHERE branch_id = ? AND verification_status IN ('verified', 'candidate', 'stale')
+          ))
         ORDER BY checked_at DESC
-      `).bind(mapped.branch.id).all<Record<string, unknown>>();
-      return { ...mapped.branch, evidence: mapEvidence(evidence.results ?? []), hoursText: mapped.hoursText };
+      `).bind(mapped.branch.id, mapped.branch.id).all<Record<string, unknown>>();
+      const mappedEvidence = mapEvidence(evidence.results ?? []);
+      const menus = mapped.branch.menus.map((menu) => ({
+        ...menu,
+        evidence: mappedEvidence
+          .filter((item) => item.entityType === "menu" && item.entityId === menu.id)
+          .map(publicEvidence),
+      }));
+      const branchEvidence = mappedEvidence
+        .filter((item) => item.entityType === "branch" && item.entityId === mapped.branch.id)
+        .map(publicEvidence);
+      return { ...mapped.branch, menus, evidence: branchEvidence, hoursText: mapped.hoursText };
     },
   };
 }

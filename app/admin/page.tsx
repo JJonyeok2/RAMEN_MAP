@@ -8,6 +8,7 @@ import {
   loadAdminEnvironment,
   verifySessionToken,
 } from "../../features/admin/auth";
+import { CandidateForm } from "./candidate-form";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,13 @@ export default async function AdminDashboardPage() {
         {Object.entries(counts.public).map(([status, count]) => (
           <article className="admin-stat" key={status}><span>{publicLabels[status as keyof typeof publicLabels]}</span><strong>{count}</strong></article>
         ))}
+      </section>
+
+      <section className="admin-panel">
+        <div className="admin-section-heading">
+          <div><h2>신규 후보 수집</h2><p>정규화된 매장·지점과 첫 출처를 한 번에 등록합니다. 새 후보는 검토 전까지 숨김 상태입니다.</p></div>
+        </div>
+        <CandidateForm />
       </section>
 
       <section className="admin-panel">

@@ -158,13 +158,13 @@ export default function ExplorePage() {
 
   const chooseCurrentLocation = async () => {
     const request = locationCoordinator().begin();
+    supersedeRecommendation();
     setLocating(true);
     setLocationMessage("");
     setSelectionError("");
     try {
       const origin = await requestRadiusSearchOrigin(navigator.geolocation);
       if (!locationCoordinator().isCurrent(request.token)) return;
-      supersedeRecommendation();
       setLocationOrigin(origin);
       setSelectedAreaId("");
       setLocationMessage("현재 위치를 추천 기준으로 사용할게요.");
