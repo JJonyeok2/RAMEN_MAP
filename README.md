@@ -1,57 +1,61 @@
 # RAMEN MAP
 
-전국 라멘을 지역과 메뉴로 탐색하고, 취향 추천봇에게 오늘의 한 그릇을 추천받는 지도 웹앱입니다.
+검증 상태와 출처 근거를 함께 보여 주는 실데이터 라멘 탐색 웹앱입니다. 공개 화면은 정규화된 D1 데이터만 사용하며, 창작 매장이나 데모 fallback을 제공하지 않습니다.
 
-## 주요 기능
+## 두 가지 탐색 모드
 
-- 카카오맵 JavaScript SDK 기반 전국 지도와 마커 클러스터
-- 가게명·대표 메뉴·태그 통합 검색
-- 쇼유, 시오, 미소, 돈코츠, 츠케멘, 마제소바 복수 필터
-- 대표 메뉴 기준 청탕, 백탕, 비빔, 츠케 스타일 분류와 복수 필터
-- 전국 17개 시·도 지역 필터
-- 화·스트레스는 카라이 메뉴로, `느끼한 건 싫어` 같은 취향은 맑고 깔끔한 청탕으로 연결하며 국물 농도·메뉴 유형·식단 제약도 반영하는 추천봇
-- 사용자가 직접 허용한 현재 위치를 기준으로 목록과 챗봇 추천을 가까운 순으로 정렬
-- 데스크톱 지도/목록 분할 화면과 모바일 바텀시트
-- 카카오맵 키가 없을 때도 기능을 둘러볼 수 있는 데모 지도
+- **배고파요 · 빨리 찾기 (`/nearby`)**: 현재 위치 또는 선택한 지역을 기준으로 3km, 10km, 30km 반경을 차례로 넓혀 지금 고를 세 곳을 찾습니다.
+- **라멘 탐방 (`/explore`)**: 지역, 라멘 유형, 국물 스타일·베이스, 농도, 맵기, 자유 입력과 `취향 우선`·`균형 추천`·`가까운 곳 우선` 가중치를 조합합니다.
 
-## 로컬 실행
+거리와 반경은 도로 경로나 이동 시간이 아닌 위·경도 사이의 직선거리입니다. 현재 위치는 사용자가 직접 요청할 때만 브라우저에서 읽으며 저장하지 않습니다. 위치 권한이 없거나 위치를 가져오지 못해도 지역을 선택해 계속할 수 있습니다.
 
-Node.js 22.13 이상이 필요합니다.
+현재 V1은 목록 중심으로 동작합니다. 지도 SDK나 지도 키 없이 공개 탐색, 추천, 상세 페이지를 사용할 수 있습니다. Kakao 지도는 향후 목록 결과를 보조할 어댑터로 연동할 예정이며, 현재 빌드에는 SDK 로더, 지도 fallback, 가짜 마커가 없습니다.
+
+## 실데이터와 공개 상태
+
+`drizzle/0000_real_shop_verification.sql`은 출처가 기록된 8개 수집 후보를 만들고, `drizzle/0001_normalize_ramen_domain.sql`은 이를 `shops`, `branches`, `menu_items`, `menu_profiles`, 영업시간, 출처 근거, 검증 이벤트, 지역, 제품 이벤트 테이블로 정규화합니다.
+
+지점과 메뉴의 검증 상태는 다음과 같습니다.
+
+- `verified`: 검증 완료
+- `candidate`: 검증 후보
+- `stale`: 재검증 필요
+- `rejected`: 제외되며 공개 API에 노출되지 않음
+
+지점 공개 상태는 `active`, `hidden`, `closed`, `moved`입니다. 공개 탐색에는 좌표가 있는 `active` 지점만 포함되고 `rejected` 지점·메뉴는 제외됩니다. 상세 화면은 저장된 출처와 확인일을 표시합니다. 검증 완료 상태는 지점 90일, 메뉴 180일이 지나면 응답에서 `stale`로 계산됩니다.
+
+## 로컬 실행과 D1
+
+Node.js 22.13 이상과 SQLite 3가 필요합니다.
 
 ```bash
 npm install
-cp .env.example .env.local
 npm run dev
 ```
 
-브라우저에서 `http://localhost:3000`을 엽니다.
-
-## 카카오맵 연결
-
-1. [카카오디벨로퍼스](https://developers.kakao.com/)에서 앱을 만듭니다.
-2. `카카오맵 > 사용 설정`을 켭니다.
-3. `플랫폼 키 > JavaScript 키`의 JavaScript SDK 도메인에 로컬 및 배포 도메인을 등록합니다.
-4. JavaScript 키를 `.env.local`에 넣습니다.
-
-```dotenv
-NEXT_PUBLIC_KAKAO_MAP_KEY=YOUR_JAVASCRIPT_KEY
-```
-
-동적 로더는 `services,clusterer` 라이브러리와 `autoload=false`를 사용합니다. JavaScript 키는 REST API 키와 다릅니다.
-
-## 데이터 안내
-
-현재 포함된 24개 매장명, 주소, 메뉴, 가격, 평점, 영업시간은 UI와 추천 로직을 검증하기 위한 **창작 데모 데이터**이며 실제 매장 정보가 아닙니다. 청탕·백탕·비빔·츠케 표시는 각 매장의 대표 메뉴를 기준으로 한 데모 분류입니다. 카카오맵은 지도 표시와 위치 확인에 사용하고, 카카오가 제공하지 않는 세부 메뉴 분류는 프로젝트 데이터에서 관리합니다.
-
-현재 위치는 사용자가 `내 위치`를 눌렀을 때만 브라우저에 요청하며 서버나 브라우저 저장소에 보관하지 않습니다. 표시되는 거리는 길찾기 거리가 아닌 좌표 간 직선거리입니다. 위치 기능은 HTTPS 배포 주소 또는 localhost에서 사용할 수 있습니다.
-
-실서비스로 전환할 때는 `app/ramen-data.ts`를 검증된 자체 데이터나 백엔드 API로 교체하세요.
-
-## 명령어
+Cloudflare 환경에는 D1 바인딩 이름 `DB`가 필요합니다. 새 데이터베이스에는 아래 순서로 두 마이그레이션을 적용합니다.
 
 ```bash
-npm run dev    # 개발 서버
-npm run build  # 배포 빌드
-npm run test   # 추천·위치 로직과 렌더링 테스트
-npm run lint   # 정적 검사
+sqlite3 ramen-map.db ".read drizzle/0000_real_shop_verification.sql" ".read drizzle/0001_normalize_ramen_domain.sql"
+```
+
+공개 API는 `/api/v1/areas`, `/api/v1/recommendations`, `/api/v1/shops/[slug]`, `/api/v1/events`이며, 화면 경로는 `/`, `/nearby`, `/explore`, `/shops/[slug]`, `/admin`입니다.
+
+## 비공개 관리자
+
+`/admin`은 정규화된 지점·메뉴, 영업시간, 출처 근거와 검증 이력을 관리합니다. `/verify`는 편집기가 아니라 `/admin`으로 이동하는 호환 경로입니다. 서버 환경에 다음 값을 설정해야 로그인할 수 있습니다.
+
+- `ADMIN_PASSWORD_HASH`: 운영자 비밀번호 UTF-8 값의 SHA-256 64자리 hex digest
+- `ADMIN_SESSION_SECRET`: 관리자 세션 HMAC 서명용 비밀값
+
+두 값이 없으면 관리자 인증은 닫힌 상태로 동작하며 관리자 API는 `503`을 반환합니다. 값이 있어도 유효한 HttpOnly 세션 쿠키가 없는 관리자 요청은 `401`입니다. 비밀값은 저장소나 `NEXT_PUBLIC_*` 변수에 넣지 마세요.
+
+## 검증 명령
+
+```bash
+npm test          # 로직 테스트, 배포 빌드, SSR·마이그레이션·cutover 계약
+npm run lint      # ESLint
+npx tsc --noEmit  # TypeScript 검사
+npm run build     # Cloudflare/Vinext 배포 빌드
+git diff --check  # 공백 오류 검사
 ```

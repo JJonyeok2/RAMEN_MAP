@@ -34,7 +34,10 @@ test("server-renders the RAMEN MAP product shell", async () => {
   assert.match(html, /배고파요/);
   assert.match(html, /빨리 찾기/);
   assert.match(html, /라멘 탐방/);
+  assert.match(html, /href="\/nearby"/);
+  assert.match(html, /href="\/explore"/);
   assert.doesNotMatch(html, /전국 17개 시·도|DEMO DATA|창작 데모/);
+  assert.doesNotMatch(html, /데모 지도|지도.*fallback|dapi\.kakao\.com/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });
 
@@ -77,6 +80,6 @@ test("keeps the quick flow list-first and explicit about its choices", async () 
   assert.match(modeCard, /<h2>\{title\}<\/h2>/);
   assert.match(styles, /mode-card/);
   assert.match(styles, /recommendation-card/);
-  assert.match(layout, /og\.png/);
+  assert.doesNotMatch(layout, /og\.png|전국 라멘|라멘 지도/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
